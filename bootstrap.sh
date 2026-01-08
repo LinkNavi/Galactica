@@ -1,7 +1,6 @@
 #!/bin/bash
 # Galactica Bootstrap System
-# This is the ONLY additional tool in the minimal base
-# It helps users set up their system on first boot
+# First-boot setup wizard for minimal Galactica Linux
 
 set -e
 
@@ -15,19 +14,22 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+PINK='\033[38;5;213m'
 NC='\033[0m'
 
 clear
 
 echo -e "${CYAN}"
 cat << "EOF"
-   ____       _            _   _           
-  / __ \     | |          | | (_)          
- | |  | | ___| | __ _  ___| |_ _  ___ __ _ 
- | |  | |/ __| |/ _` |/ __| __| |/ __/ _` |
- | |__| | (__| | (_| | (__| |_| | (_| (_| |
-  \____/ \___|_|\__,_|\___|\__|_|\___\__,_|
-                                            
+
+  ________       .__                 __  .__               
+ /  _____/_____  |  | _____    _____/  |_|__| ____ _____   
+/   \  ___\__  \ |  | \__  \ _/ ___\   __\  |/ ___\\__  \  
+\    \_\  \/ __ \|  |__/ __ \\  \___|  | |  \  \___ / __ \_
+ \______  (____  /____(____  /\___  >__| |__|\___  >____  /
+        \/     \/          \/     \/             \/     \/ 
+
+
          Minimal Linux Distribution
 EOF
 echo -e "${NC}"
@@ -39,285 +41,430 @@ echo ""
 if [[ -f "$BOOTSTRAP_DONE" ]]; then
     echo -e "${GREEN}System already bootstrapped!${NC}"
     echo ""
+    echo "Current configuration:"
+    cat "$CONFIG_DIR/bootstrap.conf" 2>/dev/null || echo "Configuration file not found"
+    echo ""
     echo "To re-run setup, remove: $BOOTSTRAP_DONE"
+    echo "To access package manager: dreamland --help"
     exit 0
 fi
 
 echo -e "${YELLOW}Welcome to Galactica Linux!${NC}"
 echo ""
-echo "This is a minimal Linux distribution. You are currently running"
-echo "with only the kernel and init system installed."
+echo "This is a minimal Linux distribution with:"
+echo "  • Custom kernel (6.18.3-galactica)"
+echo "  • AirRide init system (lightweight PID 1)"
+echo "  • Dreamland package manager (source-based)"
+echo "  • Minimal base system"
 echo ""
-echo "This bootstrap wizard will help you set up your system by:"
-echo "  1. Choosing and installing a package manager"
-echo "  2. Installing essential system components"
-echo "  3. Configuring your environment"
+echo "This bootstrap wizard will:"
+echo "  1. Configure basic system settings"
+echo "  2. Set up user accounts"
+echo "  3. Initialize the package manager"
+echo "  4. Install essential packages (optional)"
 echo ""
 read -p "Press Enter to continue..."
 
 # ============================================
-# Step 1: Choose Package Manager
+# Step 1: System Configuration
 # ============================================
 clear
-echo -e "${BLUE}=== Step 1: Package Manager Selection ===${NC}"
-echo ""
-echo "Galactica needs a package manager to install software."
-echo ""
-echo "Available options:"
-echo ""
-echo "  1) Galactic Package Manager (GPM) - Recommended"
-echo "     • Built from source for your hardware"
-echo "     • Optimized compilation"
-echo "     • Full control over build flags"
-echo ""
-echo "  2) Binary Package Manager"
-echo "     • Pre-compiled packages"
-echo "     • Faster installation"
-echo "     • Less customization"
-echo ""
-echo "  3) Minimal Ports System"
-echo "     • FreeBSD-style ports"
-echo "     • Simple Makefiles"
-echo "     • Maximum simplicity"
-echo ""
-echo "  4) Install later (drop to emergency shell)"
-echo ""
-
-read -p "Select package manager (1-4): " pkg_choice
-
-case $pkg_choice in
-    1)
-        PKG_MANAGER="gpm"
-        echo -e "${GREEN}Selected: Galactic Package Manager${NC}"
-        ;;
-    2)
-        PKG_MANAGER="binary"
-        echo -e "${GREEN}Selected: Binary Package Manager${NC}"
-        ;;
-    3)
-        PKG_MANAGER="ports"
-        echo -e "${GREEN}Selected: Minimal Ports System${NC}"
-        ;;
-    4)
-        echo -e "${YELLOW}Dropping to emergency shell...${NC}"
-        echo "Run this script again when ready to continue setup."
-        exec /bin/sh
-        ;;
-    *)
-        echo -e "${RED}Invalid choice. Defaulting to GPM.${NC}"
-        PKG_MANAGER="gpm"
-        ;;
-esac
-
-sleep 1
-
-# ============================================
-# Step 2: Essential Components
-# ============================================
-clear
-echo -e "${BLUE}=== Step 2: Essential Components ===${NC}"
-echo ""
-echo "Select components to install:"
-echo ""
-
-# Shell selection
-echo "Shell:"
-echo "  1) Bash (full-featured)"
-echo "  2) Dash (minimal, fast)"
-echo "  3) Zsh (powerful, customizable)"
-echo "  4) Fish (user-friendly)"
-read -p "Select shell (1-4) [1]: " shell_choice
-shell_choice=${shell_choice:-1}
-
-# Core utilities
-echo ""
-echo "Core Utilities:"
-echo "  1) GNU Coreutils (standard)"
-echo "  2) BusyBox (minimal, all-in-one)"
-echo "  3) uutils (Rust reimplementation)"
-read -p "Select core utilities (1-3) [1]: " utils_choice
-utils_choice=${utils_choice:-1}
-
-# Text editor
-echo ""
-echo "Text Editor:"
-echo "  1) Nano (beginner-friendly)"
-echo "  2) Vim (powerful)"
-echo "  3) Emacs (extensible)"
-echo "  4) None (install later)"
-read -p "Select editor (1-4) [1]: " editor_choice
-editor_choice=${editor_choice:-1}
-
-# Network tools
-echo ""
-read -p "Install network tools? (y/n) [y]: " install_network
-install_network=${install_network:-y}
-
-# Development tools
-echo ""
-read -p "Install development tools (gcc, make, etc.)? (y/n) [n]: " install_dev
-install_dev=${install_dev:-n}
-
-# ============================================
-# Step 3: System Configuration
-# ============================================
-clear
-echo -e "${BLUE}=== Step 3: System Configuration ===${NC}"
+echo -e "${BLUE}=== Step 1: System Configuration ===${NC}"
 echo ""
 
 # Hostname
 read -p "Enter hostname [galactica]: " hostname
 hostname=${hostname:-galactica}
-
-# Root password
-echo ""
-echo "Set root password:"
-read -s -p "Password: " root_pass
-echo ""
-read -s -p "Confirm password: " root_pass_confirm
-echo ""
-
-if [[ "$root_pass" != "$root_pass_confirm" ]]; then
-    echo -e "${RED}Passwords do not match! Using default: 'galactica'${NC}"
-    root_pass="galactica"
-fi
-
-# User creation
-echo ""
-read -p "Create a regular user? (y/n) [y]: " create_user
-create_user=${create_user:-y}
-
-if [[ "$create_user" == "y" ]]; then
-    read -p "Username: " username
-    read -s -p "Password: " user_pass
-    echo ""
-fi
-
-# ============================================
-# Step 4: Installation Summary
-# ============================================
-clear
-echo -e "${BLUE}=== Installation Summary ===${NC}"
-echo ""
-echo "Package Manager: $PKG_MANAGER"
-echo "Hostname: $hostname"
-echo ""
-echo "Components to install:"
-case $shell_choice in
-    1) echo "  • Shell: Bash" ;;
-    2) echo "  • Shell: Dash" ;;
-    3) echo "  • Shell: Zsh" ;;
-    4) echo "  • Shell: Fish" ;;
-esac
-
-case $utils_choice in
-    1) echo "  • Core Utils: GNU Coreutils" ;;
-    2) echo "  • Core Utils: BusyBox" ;;
-    3) echo "  • Core Utils: uutils" ;;
-esac
-
-case $editor_choice in
-    1) echo "  • Editor: Nano" ;;
-    2) echo "  • Editor: Vim" ;;
-    3) echo "  • Editor: Emacs" ;;
-    4) echo "  • Editor: None" ;;
-esac
-
-[[ "$install_network" == "y" ]] && echo "  • Network tools"
-[[ "$install_dev" == "y" ]] && echo "  • Development tools"
-[[ -n "$username" ]] && echo "  • User: $username"
-
-echo ""
-read -p "Proceed with installation? (y/n): " proceed
-
-if [[ "$proceed" != "y" ]]; then
-    echo "Installation cancelled."
-    exit 1
-fi
-
-# ============================================
-# Step 5: Installation
-# ============================================
-clear
-echo -e "${BLUE}=== Installing Components ===${NC}"
-echo ""
-
-# Create directories
-mkdir -p $CONFIG_DIR
-mkdir -p /var/galactica/pkg
-
-# Save configuration
-cat > $CONFIG_DIR/bootstrap.conf << EOF
-# Galactica Bootstrap Configuration
-PACKAGE_MANAGER=$PKG_MANAGER
-HOSTNAME=$hostname
-SHELL_CHOICE=$shell_choice
-UTILS_CHOICE=$utils_choice
-EDITOR_CHOICE=$editor_choice
-INSTALL_NETWORK=$install_network
-INSTALL_DEV=$install_dev
-BOOTSTRAP_DATE=$(date)
-EOF
-
-# Set hostname
 echo "$hostname" > /etc/hostname
+
 cat > /etc/hosts << EOF
 127.0.0.1   localhost
 127.0.1.1   $hostname
 ::1         localhost ip6-localhost ip6-loopback
 EOF
 
-# Install package manager
-echo -e "${GREEN}[1/5]${NC} Installing package manager..."
-# This would download and install your actual package manager
-# For now, create placeholder
-mkdir -p /usr/bin
-cat > /usr/bin/gpkg << 'GPKG_EOF'
-#!/bin/sh
-echo "Galactic Package Manager - Not yet implemented"
-echo "Usage: gpkg <install|remove|update|search> [package]"
-GPKG_EOF
-chmod +x /usr/bin/gpkg
+echo -e "${GREEN}✓${NC} Hostname set to: $hostname"
+echo ""
+
+# Timezone (simplified)
+echo "Select timezone:"
+echo "  1) UTC"
+echo "  2) America/New_York"
+echo "  3) America/Los_Angeles"
+echo "  4) Europe/London"
+echo "  5) Asia/Tokyo"
+read -p "Select timezone (1-5) [1]: " tz_choice
+tz_choice=${tz_choice:-1}
+
+case $tz_choice in
+    1) TZ="UTC" ;;
+    2) TZ="America/New_York" ;;
+    3) TZ="America/Los_Angeles" ;;
+    4) TZ="Europe/London" ;;
+    5) TZ="Asia/Tokyo" ;;
+    *) TZ="UTC" ;;
+esac
+
+echo "$TZ" > /etc/timezone
+echo -e "${GREEN}✓${NC} Timezone set to: $TZ"
+echo ""
 
 sleep 1
 
-# Install shell
-echo -e "${GREEN}[2/5]${NC} Installing shell..."
-# This would use the package manager to install chosen shell
-# Placeholder for now
-sleep 1
+# ============================================
+# Step 2: User Accounts
+# ============================================
+clear
+echo -e "${BLUE}=== Step 2: User Accounts ===${NC}"
+echo ""
 
-# Install core utilities
-echo -e "${GREEN}[3/5]${NC} Installing core utilities..."
-sleep 1
+# Root password
+echo "Current root password is: ${CYAN}galactica${NC}"
+echo ""
+read -p "Change root password? (y/n) [n]: " change_root
+change_root=${change_root:-n}
 
-# Install optional components
-echo -e "${GREEN}[4/5]${NC} Installing optional components..."
-sleep 1
-
-# Configure system
-echo -e "${GREEN}[5/5]${NC} Configuring system..."
-
-# Set root password
-if command -v chpasswd &> /dev/null; then
-    echo "root:$root_pass" | chpasswd
+if [[ "$change_root" == "y" ]]; then
+    echo ""
+    read -s -p "New password: " root_pass
+    echo ""
+    read -s -p "Confirm password: " root_pass_confirm
+    echo ""
+    
+    if [[ "$root_pass" == "$root_pass_confirm" ]] && [[ -n "$root_pass" ]]; then
+        echo "root:$root_pass" | chpasswd 2>/dev/null || {
+            # Fallback: use openssl to generate hash
+            if command -v openssl &>/dev/null; then
+                HASH=$(openssl passwd -6 "$root_pass")
+                sed -i "s|^root:[^:]*:|root:$HASH:|" /etc/shadow
+                echo -e "${GREEN}✓${NC} Root password changed"
+            else
+                echo -e "${YELLOW}!${NC} Could not change password (no chpasswd or openssl)"
+            fi
+        }
+        echo -e "${GREEN}✓${NC} Root password changed"
+    else
+        echo -e "${RED}✗${NC} Passwords do not match or empty, keeping 'galactica'"
+    fi
+else
+    echo -e "${GREEN}✓${NC} Keeping default password 'galactica'"
 fi
+echo ""
 
-# Create user if requested
-if [[ -n "$username" ]]; then
-    if command -v useradd &> /dev/null; then
-        useradd -m -s /bin/bash "$username"
-        echo "$username:$user_pass" | chpasswd
+# User creation
+read -p "Create a regular user? (y/n) [y]: " create_user
+create_user=${create_user:-y}
+
+username=""
+if [[ "$create_user" == "y" ]]; then
+    read -p "Username: " username
+    
+    if [[ -n "$username" ]]; then
+        # Check if useradd exists
+        if command -v useradd &>/dev/null; then
+            useradd -m -s /bin/sh "$username" 2>/dev/null || {
+                # Fallback: manually create user
+                echo "$username:x:1000:1000:$username:/home/$username:/bin/sh" >> /etc/passwd
+                echo "$username:x:1000:" >> /etc/group
+                mkdir -p "/home/$username"
+                chown 1000:1000 "/home/$username"
+            }
+        else
+            # Manual user creation
+            echo "$username:x:1000:1000:$username:/home/$username:/bin/sh" >> /etc/passwd
+            echo "$username:x:1000:" >> /etc/group
+            mkdir -p "/home/$username"
+        fi
+        
+        read -s -p "Password for $username: " user_pass
+        echo ""
+        
+        if [[ -n "$user_pass" ]]; then
+            echo "$username:$user_pass" | chpasswd 2>/dev/null || {
+                # Fallback: add to shadow manually
+                echo "$username:$(openssl passwd -6 "$user_pass" 2>/dev/null || echo '*'):19000:0:99999:7:::" >> /etc/shadow
+            }
+        fi
+        
+        echo -e "${GREEN}✓${NC} User $username created"
     fi
 fi
+echo ""
 
 sleep 1
+
+# ============================================
+# Step 3: Package Manager Setup
+# ============================================
+clear
+echo -e "${BLUE}=== Step 3: Package Manager - Dreamland ===${NC}"
+echo ""
+
+echo "Dreamland is Galactica's source-based package manager."
+echo "It builds software from source and fetches packages from:"
+echo "  ${CYAN}https://github.com/LinkNavi/GalacticaRepository${NC}"
+echo ""
+
+# Check if dreamland is installed
+if command -v dreamland &>/dev/null || command -v dl &>/dev/null; then
+    echo -e "${GREEN}✓${NC} Dreamland package manager found"
+    
+    read -p "Initialize package database? (y/n) [y]: " init_pkg
+    init_pkg=${init_pkg:-y}
+    
+    if [[ "$init_pkg" == "y" ]]; then
+        echo ""
+        echo "Syncing package repository..."
+        
+        # Create dreamland directories
+        mkdir -p /var/dreamland/{cache,build}
+        mkdir -p /var/dreamland/cache
+        
+        # Sync package index
+        if command -v dreamland &>/dev/null; then
+            dreamland sync || echo -e "${YELLOW}Warning: Could not sync repository (network may not be configured)${NC}"
+        elif command -v dl &>/dev/null; then
+            dl sync || echo -e "${YELLOW}Warning: Could not sync repository (network may not be configured)${NC}"
+        fi
+        
+        echo -e "${GREEN}✓${NC} Package manager initialized"
+    fi
+else
+    echo -e "${YELLOW}!${NC} Dreamland not found in PATH"
+    echo ""
+    echo "To install Dreamland later:"
+    echo "  1. Build it from AirRide/Dreamland/"
+    echo "  2. Copy the binary to /usr/bin/dreamland"
+    echo "  3. Run: dreamland sync"
+fi
+echo ""
+
+sleep 1
+
+# ============================================
+# Step 4: Essential Packages
+# ============================================
+clear
+echo -e "${BLUE}=== Step 4: Essential Packages ===${NC}"
+echo ""
+
+echo "Would you like to install essential packages?"
+echo ""
+echo "Recommended packages:"
+echo "  • coreutils (ls, cp, mv, rm, cat, etc.)"
+echo "  • bash (full-featured shell)"
+echo "  • vim or nano (text editor)"
+echo "  • network tools (wget, curl, openssh)"
+echo ""
+echo -e "${YELLOW}Note: This requires network connectivity${NC}"
+echo ""
+
+read -p "Install essential packages? (y/n) [n]: " install_pkgs
+install_pkgs=${install_pkgs:-n}
+
+if [[ "$install_pkgs" == "y" ]]; then
+    # List of essential packages to install
+    PACKAGES=(
+        "coreutils"
+        "bash"
+        "nano"
+        "wget"
+    )
+    
+    echo ""
+    echo "Packages to install: ${PACKAGES[*]}"
+    echo ""
+    read -p "Proceed? (y/n) [y]: " proceed
+    proceed=${proceed:-y}
+    
+    if [[ "$proceed" == "y" ]]; then
+        if command -v dreamland &>/dev/null; then
+            for pkg in "${PACKAGES[@]}"; do
+                echo ""
+                echo -e "${BLUE}Installing $pkg...${NC}"
+                dreamland install "$pkg" || echo -e "${YELLOW}Failed to install $pkg${NC}"
+            done
+        else
+            echo -e "${RED}✗${NC} Dreamland not available, skipping package installation"
+        fi
+    fi
+else
+    echo "Skipping package installation"
+    echo ""
+    echo "To install packages later:"
+    echo "  dreamland search <query>    # Search for packages"
+    echo "  dreamland install <package> # Install a package"
+    echo "  dreamland list              # List installed packages"
+fi
+echo ""
+
+sleep 1
+
+# ============================================
+# Step 5: Service Configuration
+# ============================================
+clear
+echo -e "${BLUE}=== Step 5: Service Configuration ===${NC}"
+echo ""
+
+echo "AirRide manages system services."
+echo "Currently available services are defined in: /etc/airride/services/"
+echo ""
+
+# List available services
+if [[ -d /etc/airride/services ]]; then
+    echo "Available services:"
+    for service in /etc/airride/services/*.service; do
+        if [[ -f "$service" ]]; then
+            name=$(basename "$service" .service)
+            echo "  • $name"
+        fi
+    done
+else
+    mkdir -p /etc/airride/services
+    echo "No services configured yet"
+fi
+echo ""
+
+echo "Service management:"
+echo "  airridectl start <service>   # Start a service"
+echo "  airridectl stop <service>    # Stop a service"
+echo "  airridectl status <service>  # Check service status"
+echo "  airridectl list              # List all services"
+echo ""
+
+sleep 1
+
+# ============================================
+# Step 6: Network Configuration (Basic)
+# ============================================
+clear
+echo -e "${BLUE}=== Step 6: Network Configuration ===${NC}"
+echo ""
+
+read -p "Configure network now? (y/n) [n]: " config_net
+config_net=${config_net:-n}
+
+if [[ "$config_net" == "y" ]]; then
+    echo ""
+    echo "Network configuration options:"
+    echo "  1) DHCP (automatic)"
+    echo "  2) Static IP"
+    echo "  3) Skip for now"
+    read -p "Select option (1-3) [1]: " net_choice
+    net_choice=${net_choice:-1}
+    
+    case $net_choice in
+        1)
+            echo "Configuring DHCP..."
+            if command -v dhclient &>/dev/null; then
+                dhclient eth0 &
+                echo -e "${GREEN}✓${NC} DHCP client started"
+            elif command -v udhcpc &>/dev/null; then
+                udhcpc -i eth0 &
+                echo -e "${GREEN}✓${NC} DHCP client started"
+            else
+                echo -e "${YELLOW}!${NC} No DHCP client found"
+                echo "Install dhclient or udhcpc: dreamland install dhcp"
+            fi
+            ;;
+        2)
+            echo "Static IP configuration:"
+            read -p "IP Address: " ip_addr
+            read -p "Netmask [255.255.255.0]: " netmask
+            netmask=${netmask:-255.255.255.0}
+            read -p "Gateway: " gateway
+            read -p "DNS Server: " dns
+            
+            if command -v ip &>/dev/null; then
+                ip addr add "$ip_addr/$netmask" dev eth0
+                ip route add default via "$gateway"
+                echo "nameserver $dns" > /etc/resolv.conf
+                echo -e "${GREEN}✓${NC} Static IP configured"
+            else
+                echo -e "${YELLOW}!${NC} 'ip' command not found"
+                echo "Manual configuration needed"
+            fi
+            ;;
+        3)
+            echo "Skipping network configuration"
+            ;;
+    esac
+else
+    echo "Network configuration skipped"
+    echo ""
+    echo "To configure network later:"
+    echo "  DHCP: dhclient eth0"
+    echo "  Static: ip addr add <ip>/<mask> dev eth0"
+fi
+echo ""
+
+sleep 1
+
+# ============================================
+# Step 7: Save Configuration
+# ============================================
+clear
+echo -e "${BLUE}=== Step 7: Finalizing Setup ===${NC}"
+echo ""
+
+# Create config directory
+mkdir -p "$CONFIG_DIR"
+
+# Save bootstrap configuration
+cat > "$CONFIG_DIR/bootstrap.conf" << EOF
+# Galactica Bootstrap Configuration
+GALACTICA_VERSION=$GALACTICA_VERSION
+HOSTNAME=$hostname
+TIMEZONE=$TZ
+USERNAME=$username
+BOOTSTRAP_DATE=$(date)
+PACKAGE_MANAGER=dreamland
+EOF
+
+# Create a helpful MOTD
+cat > /etc/motd << 'EOF'
+
+  ________       .__                 __  .__               
+ /  _____/_____  |  | _____    _____/  |_|__| ____ _____   
+/   \  ___\__  \ |  | \__  \ _/ ___\   __\  |/ ___\\__  \  
+\    \_\  \/ __ \|  |__/ __ \\  \___|  | |  \  \___ / __ \_
+ \______  (____  /____(____  /\___  >__| |__|\___  >____  /
+        \/     \/          \/     \/             \/     \/ 
+
+
+Welcome to Galactica Linux - Minimal by Design
+
+Quick reference:
+  • Package manager: dreamland (or 'dl')
+    - dl sync              Sync package repository
+    - dl search <query>    Search for packages
+    - dl install <pkg>     Install a package
+    - dl list              List installed packages
+
+  • Service manager: airridectl
+    - airridectl list              List services
+    - airridectl start <service>   Start a service
+    - airridectl status <service>  Check status
+
+  • System info:
+    - uname -a            Kernel version
+    - free -h             Memory usage
+    - df -h               Disk usage
+
+Documentation: https://github.com/LinkNavi/Galactica
+
+EOF
+
+# Mark as complete
+touch "$BOOTSTRAP_DONE"
+
+echo -e "${GREEN}✓${NC} Configuration saved"
+echo ""
 
 # ============================================
 # Completion
 # ============================================
-touch $BOOTSTRAP_DONE
-
 clear
 echo -e "${GREEN}"
 cat << "EOF"
@@ -332,15 +479,43 @@ echo -e "${NC}"
 
 echo -e "${GREEN}=== Bootstrap Complete! ===${NC}"
 echo ""
-echo "Your Galactica system is now set up!"
+echo "Your Galactica system is configured:"
+echo ""
+echo "  Hostname:       $hostname"
+echo "  Timezone:       $TZ"
+[[ -n "$username" ]] && echo "  User:           $username"
+echo "  Package Mgr:    Dreamland"
+echo "  Init System:    AirRide"
 echo ""
 echo "Next steps:"
-echo "  • Explore installed packages: gpkg list"
-echo "  • Install more software: gpkg install <package>"
-echo "  • Configure services: airridectl list"
 echo ""
-echo "Documentation: /usr/share/doc/galactica"
+echo "  1. Sync package repository:"
+echo "     ${CYAN}dreamland sync${NC}"
 echo ""
-read -p "Press Enter to reboot..."
+echo "  2. Search and install software:"
+echo "     ${CYAN}dreamland search editor${NC}"
+echo "     ${CYAN}dreamland install vim${NC}"
+echo ""
+echo "  3. Manage services:"
+echo "     ${CYAN}airridectl list${NC}"
+echo "     ${CYAN}airridectl start <service>${NC}"
+echo ""
+echo "  4. Explore the system:"
+echo "     ${CYAN}cat /etc/motd${NC}"
+echo ""
+echo "Documentation: /usr/share/doc/galactica (if available)"
+echo "Repository:    https://github.com/LinkNavi/GalacticaRepository"
+echo ""
 
-reboot
+read -p "Press Enter to continue to shell..."
+
+# Display MOTD
+cat /etc/motd
+
+echo ""
+echo "You are now in the Galactica shell."
+echo "Type 'exit' to return to the parent process."
+echo ""
+
+# Drop to shell
+exec /bin/sh
