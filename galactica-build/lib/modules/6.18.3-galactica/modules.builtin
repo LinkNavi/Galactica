@@ -1,6 +1,4 @@
 kernel/arch/x86/events/amd/amd-uncore.ko
-kernel/arch/x86/kvm/kvm.ko
-kernel/arch/x86/kvm/kvm-intel.ko
 kernel/mm/zsmalloc.ko
 kernel/fs/binfmt_script.ko
 kernel/fs/mbcache.ko
@@ -32,6 +30,7 @@ kernel/crypto/rsa_generic.ko
 kernel/crypto/crypto_acompress.ko
 kernel/crypto/cryptomgr.ko
 kernel/crypto/cmac.ko
+kernel/crypto/crypto_null.ko
 kernel/crypto/sha1.ko
 kernel/crypto/sha256.ko
 kernel/crypto/blake2b_generic.ko
@@ -158,5 +157,4 @@ kernel/net/bridge/br_netfilter.ko
 kernel/net/8021q/8021q.ko
 kernel/net/wireless/cfg80211.ko
 kernel/net/mac80211/mac80211.ko
-kernel/virt/lib/irqbypass.ko
 kernel/arch/x86/video/video-common.ko
