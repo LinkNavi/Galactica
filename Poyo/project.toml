@@ -1,0 +1,44 @@
+name = "Poyo"
+version = "0.1.0"
+type = "exec"
+language = "c"
+authors = []
+
+[sources]
+dirs = ["src"]
+
+[includes]
+dirs = ["include"]
+
+[build]
+flags = []
+optimization = "2"
+
+[deps]
+
+[dev-deps]
+
+[profile.dev]
+opt_level = "0"
+debug = true
+lto = false
+strip = false
+flags = ["-Wall", "-Wextra", "-g"]
+
+[profile.release]
+opt_level = "3"
+debug = false
+lto = true
+strip = true
+flags = ["-Wall", "-Wextra", "-O3", "-DNDEBUG"]
+
+[features]
+# Define your features here
+# example = ["dep:some-package"]
+
+[scripts]
+# Custom build scripts
+# prebuild = "echo 'Starting build'"
+# postbuild = "echo 'Build complete'"
+
+

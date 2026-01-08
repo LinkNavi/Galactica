@@ -16,6 +16,7 @@ echo "  • 'virtio_blk virtio0' - VIRTIO driver loading"
 echo "  • 'VFS: Mounted root' - Root filesystem mounted"
 echo "  • 'Run /sbin/init' - Init starting"
 echo "  • AirRide startup messages"
+echo "  • Poyo login prompt"
 echo ""
 echo "Press Enter to boot..."
 read

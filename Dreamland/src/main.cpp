@@ -47,15 +47,58 @@ static size_t write_callback(void* contents, size_t size, size_t nmemb, std::str
 
 class Dreamland {
 private:
-    std::string cache_dir = "/var/dreamland/cache";
-    std::string pkg_db = "/var/dreamland/packages.db";
-    std::string build_dir = "/var/dreamland/build";
-    std::string installed_db = "/var/dreamland/installed.db";
-    std::string pkg_index = "/var/dreamland/package_index.txt";
+    std::string cache_dir;
+    std::string pkg_db;
+    std::string build_dir;
+    std::string installed_db;
+    std::string pkg_index;
     
     std::map<std::string, Package> packages;
     std::map<std::string, Package> installed;
     std::set<std::string> available_packages;
+
+    // Get user's home directory
+    std::string get_home_dir() {
+        const char* home = getenv("HOME");
+        if (home) {
+            return std::string(home);
+        }
+        
+        // Fallback to /tmp if HOME not set
+        return "/tmp";
+    }
+
+    // Initialize directory paths based on XDG standards
+    void init_directories() {
+        std::string home = get_home_dir();
+        
+        // Check for XDG_CACHE_HOME
+        const char* xdg_cache = getenv("XDG_CACHE_HOME");
+        std::string base_cache = xdg_cache ? std::string(xdg_cache) : home + "/.cache";
+        
+        // Check for XDG_DATA_HOME
+        const char* xdg_data = getenv("XDG_DATA_HOME");
+        std::string base_data = xdg_data ? std::string(xdg_data) : home + "/.local/share";
+        
+        // Set up Dreamland directories
+        cache_dir = base_cache + "/dreamland";
+        build_dir = cache_dir + "/build";
+        pkg_index = cache_dir + "/package_index.txt";
+        
+        installed_db = base_data + "/dreamland/installed.db";
+        pkg_db = base_data + "/dreamland/packages.db";
+        
+        // Create all necessary directories
+        try {
+            fs::create_directories(cache_dir);
+            fs::create_directories(build_dir);
+            fs::create_directories(fs::path(installed_db).parent_path());
+            fs::create_directories(fs::path(pkg_db).parent_path());
+        } catch (const fs::filesystem_error& e) {
+            print_error("Failed to create directories: " + std::string(e.what()));
+            throw;
+        }
+    }
 
     void print_banner() {
         std::cout << PINK;
@@ -81,6 +124,11 @@ private:
         std::cout << YELLOW << "[!] " << RESET << msg << std::endl;
     }
 
+    void print_debug(const std::string& msg) {
+        // Uncomment for debugging
+        // std::cout << "[DEBUG] " << msg << std::endl;
+    }
+
     // Download content from URL using curl
     bool download_url(const std::string& url, std::string& output) {
         CURL* curl = curl_easy_init();
@@ -94,11 +142,16 @@ private:
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "Dreamland/1.0");
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
         
         CURLcode res = curl_easy_perform(curl);
         long response_code;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
         curl_easy_cleanup(curl);
+
+        if (res != CURLE_OK) {
+            print_debug("CURL error: " + std::string(curl_easy_strerror(res)));
+        }
 
         return (res == CURLE_OK && response_code == 200);
     }
@@ -110,13 +163,25 @@ private:
             return false;
         }
 
+        // Ensure parent directory exists
+        fs::create_directories(fs::path(filepath).parent_path());
+
         std::ofstream file(filepath);
         if (!file.is_open()) {
+            print_error("Cannot open file for writing: " + filepath);
             return false;
         }
 
         file << content;
         file.close();
+        
+        // Verify file was written
+        if (!fs::exists(filepath)) {
+            print_error("File was not created: " + filepath);
+            return false;
+        }
+        
+        print_debug("Saved to: " + filepath);
         return true;
     }
 
@@ -128,24 +193,57 @@ private:
         std::string index_content;
         
         if (!download_url(index_url, index_content)) {
-            print_error("Failed to fetch package index");
+            print_error("Failed to fetch package index from: " + index_url);
+            print_warning("Check your internet connection and repository URL");
             return false;
         }
 
-        // Parse index and save to local file
+        if (index_content.empty()) {
+            print_error("Package index is empty");
+            return false;
+        }
+
+        // Save to local file
         std::ofstream index_file(pkg_index);
+        if (!index_file.is_open()) {
+            print_error("Cannot write to: " + pkg_index);
+            print_warning("Check permissions for: " + cache_dir);
+            return false;
+        }
+        
         index_file << index_content;
         index_file.close();
+        
+        // Verify it was written
+        if (!fs::exists(pkg_index) || fs::file_size(pkg_index) == 0) {
+            print_error("Failed to save package index to: " + pkg_index);
+            return false;
+        }
+        
+        print_debug("Package index saved to: " + pkg_index);
 
         // Parse package list
         available_packages.clear();
         std::istringstream iss(index_content);
         std::string line;
+        int line_count = 0;
+        
         while (std::getline(iss, line)) {
+            // Trim whitespace
+            line.erase(0, line.find_first_not_of(" \t\r\n"));
+            line.erase(line.find_last_not_of(" \t\r\n") + 1);
+            
             // Format: category/package_name.pkg
             if (!line.empty() && line[0] != '#') {
                 available_packages.insert(line);
+                line_count++;
+                print_debug("Added package: " + line);
             }
+        }
+
+        if (line_count == 0) {
+            print_error("No packages found in index");
+            return false;
         }
 
         print_success("Found " + std::to_string(available_packages.size()) + " packages");
@@ -155,16 +253,31 @@ private:
     // Load local package index
     void load_package_index() {
         if (!fs::exists(pkg_index)) {
+            print_debug("Package index not found: " + pkg_index);
             return;
         }
 
         std::ifstream file(pkg_index);
+        if (!file.is_open()) {
+            print_warning("Cannot read package index: " + pkg_index);
+            return;
+        }
+        
         std::string line;
+        int count = 0;
+        
         while (std::getline(file, line)) {
+            // Trim whitespace
+            line.erase(0, line.find_first_not_of(" \t\r\n"));
+            line.erase(line.find_last_not_of(" \t\r\n") + 1);
+            
             if (!line.empty() && line[0] != '#') {
                 available_packages.insert(line);
+                count++;
             }
         }
+        
+        print_debug("Loaded " + std::to_string(count) + " packages from index");
     }
 
     // Download a specific .pkg file from GitHub
@@ -173,9 +286,16 @@ private:
         std::string local_path = cache_dir + "/" + pkg_path;
         
         // Create directory structure
-        fs::create_directories(fs::path(local_path).parent_path());
+        try {
+            fs::create_directories(fs::path(local_path).parent_path());
+        } catch (const fs::filesystem_error& e) {
+            print_error("Cannot create directory: " + std::string(e.what()));
+            return false;
+        }
         
         print_status("Downloading package definition...");
+        print_debug("From: " + pkg_url);
+        print_debug("To: " + local_path);
         
         if (!download_file(pkg_url, local_path)) {
             print_error("Failed to download: " + pkg_path);
@@ -189,13 +309,17 @@ private:
     bool parse_package(const std::string& filepath, Package& pkg) {
         std::ifstream file(filepath);
         if (!file.is_open()) {
+            print_error("Cannot open package file: " + filepath);
             return false;
         }
 
         std::string line;
         std::string current_section;
+        int line_num = 0;
 
         while (std::getline(file, line)) {
+            line_num++;
+            
             // Trim whitespace
             line.erase(0, line.find_first_not_of(" \t\r\n"));
             line.erase(line.find_last_not_of(" \t\r\n") + 1);
@@ -206,6 +330,7 @@ private:
             // Section headers
             if (line[0] == '[' && line[line.length()-1] == ']') {
                 current_section = line.substr(1, line.length()-2);
+                print_debug("Parsing section: " + current_section);
                 continue;
             }
             
@@ -257,7 +382,13 @@ private:
             }
         }
 
-        return !pkg.name.empty();
+        if (pkg.name.empty()) {
+            print_error("Package name not found in: " + filepath);
+            return false;
+        }
+        
+        print_debug("Parsed package: " + pkg.name + " " + pkg.version);
+        return true;
     }
 
     // Find package path in index
@@ -275,20 +406,31 @@ private:
                 : filename;
             
             if (name == pkg_name) {
+                print_debug("Found package at: " + path);
                 return path;
             }
         }
+        
+        print_debug("Package not found in index: " + pkg_name);
         return "";
     }
 
     // Load installed packages database
     void load_installed() {
         if (!fs::exists(installed_db)) {
+            print_debug("No installed packages database: " + installed_db);
             return;
         }
 
         std::ifstream file(installed_db);
+        if (!file.is_open()) {
+            print_warning("Cannot read installed database: " + installed_db);
+            return;
+        }
+        
         std::string line;
+        int count = 0;
+        
         while (std::getline(file, line)) {
             if (line.empty()) continue;
             
@@ -302,20 +444,35 @@ private:
                 pkg.version = version;
                 pkg.installed = true;
                 installed[name] = pkg;
+                count++;
             }
         }
+        
+        print_debug("Loaded " + std::to_string(count) + " installed packages");
     }
 
     // Save installed packages database
     void save_installed() {
+        // Ensure directory exists
+        fs::create_directories(fs::path(installed_db).parent_path());
+        
         std::ofstream file(installed_db);
+        if (!file.is_open()) {
+            print_error("Cannot write to installed database: " + installed_db);
+            return;
+        }
+        
         for (const auto& [name, pkg] : installed) {
             file << name << " " << pkg.version << "\n";
         }
+        
+        file.close();
+        print_debug("Saved installed database: " + installed_db);
     }
 
     // Execute a shell command
     int execute_command(const std::string& cmd) {
+        print_debug("Executing: " + cmd);
         int status = system(cmd.c_str());
         return WEXITSTATUS(status);
     }
@@ -331,18 +488,24 @@ private:
             std::string ext = pkg.url.substr(pkg.url.find_last_of('.'));
             std::string archive = "/tmp/" + pkg.name + ext;
             
-            cmd = "wget -O " + archive + " " + pkg.url;
+            cmd = "wget -q -O " + archive + " " + pkg.url;
             if (execute_command(cmd) != 0) {
-                return false;
+                cmd = "curl -s -L -o " + archive + " " + pkg.url;
+                if (execute_command(cmd) != 0) {
+                    print_error("Failed to download source (tried wget and curl)");
+                    return false;
+                }
             }
             
             // Extract based on extension
             if (ext == ".gz" || ext == ".tgz") {
-                cmd = "tar -xzf " + archive + " -C " + dest + " --strip-components=1";
+                cmd = "tar -xzf " + archive + " -C " + dest + " --strip-components=1 2>/dev/null";
             } else if (ext == ".bz2") {
-                cmd = "tar -xjf " + archive + " -C " + dest + " --strip-components=1";
+                cmd = "tar -xjf " + archive + " -C " + dest + " --strip-components=1 2>/dev/null";
             } else if (ext == ".xz") {
-                cmd = "tar -xJf " + archive + " -C " + dest + " --strip-components=1";
+                cmd = "tar -xJf " + archive + " -C " + dest + " --strip-components=1 2>/dev/null";
+            } else if (ext == ".zip") {
+                cmd = "unzip -q " + archive + " -d " + dest + " 2>/dev/null";
             } else {
                 print_error("Unknown archive format: " + ext);
                 return false;
@@ -359,6 +522,11 @@ private:
         // Create build script
         std::string script_path = build_path + "/dreamland_build.sh";
         std::ofstream script(script_path);
+        
+        if (!script.is_open()) {
+            print_error("Cannot create build script: " + script_path);
+            return false;
+        }
         
         script << "#!/bin/bash\n";
         script << "set -e\n\n";
@@ -395,16 +563,24 @@ private:
         script.close();
         
         // Make executable
-        fs::permissions(script_path, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
+        try {
+            fs::permissions(script_path, 
+                fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write,
+                fs::perm_options::add);
+        } catch (const fs::filesystem_error& e) {
+            print_error("Cannot set permissions: " + std::string(e.what()));
+            return false;
+        }
         
         // Execute build script
-        int result = execute_command("bash " + script_path);
+        int result = execute_command("bash " + script_path + " 2>&1 | tee " + build_path + "/build.log");
         
         if (result == 0) {
             print_success("Built " + pkg.name + " successfully");
             return true;
         } else {
             print_error("Failed to build " + pkg.name);
+            print_warning("Check build log: " + build_path + "/build.log");
             return false;
         }
     }
@@ -435,13 +611,14 @@ private:
 
 public:
     Dreamland() {
-        // Ensure directories exist
-        fs::create_directories(cache_dir);
-        fs::create_directories(build_dir);
-        fs::create_directories(fs::path(pkg_db).parent_path());
+        // Initialize directory paths
+        init_directories();
         
         // Initialize curl
         curl_global_init(CURL_GLOBAL_DEFAULT);
+        
+        print_debug("Cache directory: " + cache_dir);
+        print_debug("Data directory: " + fs::path(installed_db).parent_path().string());
     }
 
     ~Dreamland() {
@@ -452,9 +629,12 @@ public:
         print_banner();
         print_status("Syncing with GitHub repository...");
         print_status("Repository: " GITHUB_REPO);
+        std::cout << "Cache: " << cache_dir << "\n\n";
         
         if (!fetch_package_index()) {
             print_error("Failed to sync repository");
+            print_warning("Make sure you have internet connection");
+            print_warning("Check: " + std::string(GITHUB_RAW_URL) + "INDEX");
             return;
         }
         
@@ -469,10 +649,12 @@ public:
         
         if (available_packages.empty()) {
             print_warning("Package index is empty. Run 'dreamland sync' first.");
+            print_warning("Index location: " + pkg_index);
             return;
         }
         
         print_status("Searching for: " + query);
+        print_debug("Searching through " + std::to_string(available_packages.size()) + " packages");
         std::cout << "\n";
         
         bool found = false;
@@ -507,13 +689,20 @@ public:
         
         if (!found) {
             print_warning("No packages found matching: " + query);
-            std::cout << "\nTry: dreamland sync (to update package index)\n";
+            std::cout << "\nTry:\n";
+            std::cout << "  dreamland sync         # Update package index\n";
+            std::cout << "  dreamland search vim   # Different search term\n";
         }
     }
 
     bool install_package(const std::string& pkg_name) {
         load_package_index();
         load_installed();
+        
+        if (available_packages.empty()) {
+            print_warning("Package index is empty. Run 'dreamland sync' first.");
+            return false;
+        }
         
         // Check if already installed
         if (installed.find(pkg_name) != installed.end()) {
@@ -553,7 +742,12 @@ public:
         
         // Create build directory
         std::string build_path = build_dir + "/" + pkg_name;
-        fs::create_directories(build_path);
+        try {
+            fs::create_directories(build_path);
+        } catch (const fs::filesystem_error& e) {
+            print_error("Cannot create build directory: " + std::string(e.what()));
+            return false;
+        }
         
         // Download source
         if (!download_source(pkg, build_path)) {
@@ -572,7 +766,11 @@ public:
         save_installed();
         
         // Cleanup build directory
-        fs::remove_all(build_path);
+        try {
+            fs::remove_all(build_path);
+        } catch (const fs::filesystem_error& e) {
+            print_warning("Could not clean build directory: " + std::string(e.what()));
+        }
         
         print_success("Successfully installed " + pkg_name + "!");
         return true;
@@ -584,6 +782,10 @@ public:
         
         if (installed.empty()) {
             print_warning("No packages installed");
+            std::cout << "\nTry:\n";
+            std::cout << "  dreamland sync           # Update package list\n";
+            std::cout << "  dreamland search editor  # Find packages\n";
+            std::cout << "  dreamland install vim    # Install a package\n";
             return;
         }
         
@@ -591,6 +793,8 @@ public:
         for (const auto& [name, pkg] : installed) {
             std::cout << PINK << name << RESET << " " << pkg.version << "\n";
         }
+        
+        std::cout << "\nDatabase: " << installed_db << "\n";
     }
 
     void clean() {
@@ -602,18 +806,26 @@ public:
         
         // Calculate sizes
         if (fs::exists(build_dir)) {
-            for (const auto& entry : fs::recursive_directory_iterator(build_dir)) {
-                if (fs::is_regular_file(entry)) {
-                    build_size += fs::file_size(entry);
+            try {
+                for (const auto& entry : fs::recursive_directory_iterator(build_dir)) {
+                    if (fs::is_regular_file(entry)) {
+                        build_size += fs::file_size(entry);
+                    }
                 }
+            } catch (const fs::filesystem_error& e) {
+                print_warning("Error calculating build size: " + std::string(e.what()));
             }
         }
         
         if (fs::exists(cache_dir)) {
-            for (const auto& entry : fs::recursive_directory_iterator(cache_dir)) {
-                if (fs::is_regular_file(entry)) {
-                    cache_size += fs::file_size(entry);
+            try {
+                for (const auto& entry : fs::recursive_directory_iterator(cache_dir)) {
+                    if (fs::is_regular_file(entry)) {
+                        cache_size += fs::file_size(entry);
+                    }
                 }
+            } catch (const fs::filesystem_error& e) {
+                print_warning("Error calculating cache size: " + std::string(e.what()));
             }
         }
         
@@ -624,7 +836,8 @@ public:
         std::cout << "This will remove:\n";
         std::cout << "  • All build directories\n";
         std::cout << "  • Downloaded package definitions\n";
-        std::cout << "  • Source archives\n\n";
+        std::cout << "  • Source archives\n";
+        std::cout << "  • Keep: installed packages database\n\n";
         
         std::string confirm;
         std::cout << "Continue? (y/n): ";
@@ -637,26 +850,34 @@ public:
         
         // Clean build directory
         if (fs::exists(build_dir)) {
-            fs::remove_all(build_dir);
-            fs::create_directories(build_dir);
-            print_success("Cleaned build directory");
+            try {
+                fs::remove_all(build_dir);
+                fs::create_directories(build_dir);
+                print_success("Cleaned build directory");
+            } catch (const fs::filesystem_error& e) {
+                print_error("Error cleaning build directory: " + std::string(e.what()));
+            }
         }
         
         // Clean cache (but keep package index)
         if (fs::exists(cache_dir)) {
-            for (const auto& entry : fs::directory_iterator(cache_dir)) {
-                if (entry.path().filename() != "package_index.txt") {
-                    fs::remove_all(entry);
+            try {
+                for (const auto& entry : fs::directory_iterator(cache_dir)) {
+                    if (entry.path().filename() != "package_index.txt") {
+                        fs::remove_all(entry);
+                    }
                 }
+                print_success("Cleaned cache directory");
+            } catch (const fs::filesystem_error& e) {
+                print_error("Error cleaning cache: " + std::string(e.what()));
             }
-            print_success("Cleaned cache directory");
         }
         
         // Clean /tmp archives
-        execute_command("rm -f /tmp/*.tar.* /tmp/*.tgz 2>/dev/null");
+        execute_command("rm -f /tmp/*.tar.* /tmp/*.tgz /tmp/*.zip 2>/dev/null");
         
-        print_success("Clean complete! Freed " + 
-                     std::to_string((build_size + cache_size) / 1024.0 / 1024.0) + " MB");
+        double freed_mb = (build_size + cache_size) / 1024.0 / 1024.0;
+        print_success("Clean complete! Freed " + std::to_string(freed_mb) + " MB");
     }
 
     void show_usage(const std::string& prog) {
@@ -676,39 +897,48 @@ public:
         std::cout << "  " << prog << " install vim\n";
         std::cout << "  dl install nginx    (short command)\n";
         std::cout << "  dl clean            (free up disk space)\n";
+        std::cout << "\nConfiguration:\n";
+        std::cout << "  Cache:  " << cache_dir << "\n";
+        std::cout << "  Data:   " << fs::path(installed_db).parent_path().string() << "\n";
         std::cout << "\nRepository: " GITHUB_REPO "\n";
     }
 };
 
 int main(int argc, char* argv[]) {
-    Dreamland dl;
-    
-    if (argc < 2) {
-        dl.show_usage(argv[0]);
+    try {
+        Dreamland dl;
+        
+        if (argc < 2) {
+            dl.show_usage(argv[0]);
+            return 1;
+        }
+        
+        std::string command = argv[1];
+        
+        if (command == "sync") {
+            dl.sync();
+        }
+        else if (command == "search" && argc >= 3) {
+            dl.search(argv[2]);
+        }
+        else if (command == "install" && argc >= 3) {
+            return dl.install_package(argv[2]) ? 0 : 1;
+        }
+        else if (command == "list") {
+            dl.list_installed();
+        }
+        else if (command == "clean") {
+            dl.clean();
+        }
+        else {
+            dl.show_usage(argv[0]);
+            return 1;
+        }
+        
+        return 0;
+        
+    } catch (const std::exception& e) {
+        std::cerr << RED << "[✗] Fatal error: " << e.what() << RESET << std::endl;
         return 1;
     }
-    
-    std::string command = argv[1];
-    
-    if (command == "sync") {
-        dl.sync();
-    }
-    else if (command == "search" && argc >= 3) {
-        dl.search(argv[2]);
-    }
-    else if (command == "install" && argc >= 3) {
-        return dl.install_package(argv[2]) ? 0 : 1;
-    }
-    else if (command == "list") {
-        dl.list_installed();
-    }
-    else if (command == "clean") {
-        dl.clean();
-    }
-    else {
-        dl.show_usage(argv[0]);
-        return 1;
-    }
-    
-    return 0;
 }

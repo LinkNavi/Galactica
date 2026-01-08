@@ -1,9 +1,0 @@
-[Service]
-name=shell
-description=Emergency Shell
-type=simple
-exec_start=/bin/sh
-restart=always
-restart_delay=1
-
-[Dependencies]
