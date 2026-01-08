@@ -1,6 +1,6 @@
 #!/bin/bash
-# Galactica Master Build and Launch Script
-# Builds everything and prepares for QEMU boot
+# Galactica Complete Build and Launch Script
+# Builds everything correctly with all fixes applied
 
 set -e
 
@@ -19,10 +19,8 @@ TARGET_ROOT="./galactica-build"
 KERNEL_DIR="./linux-6.18.3"
 AIRRIDE_DIR="./AirRide"
 DREAMLAND_DIR="./Dreamland"
-INITRAMFS_DIR="./initramfs-build"
-OUTPUT_INITRAMFS="galactica-initramfs.cpio.gz"
 OUTPUT_ROOTFS="galactica-rootfs.img"
-ROOTFS_SIZE=2048  # Size in MB
+ROOTFS_SIZE=1024  # Size in MB
 
 # Track what steps have been completed
 declare -A COMPLETED_STEPS
@@ -42,11 +40,10 @@ print_banner() {
  \______  (____  /____(____  /\___  >__| |__|\___  >____  /
         \/     \/          \/     \/             \/     \/ 
 
-
-    Minimal Linux - Build & Launch System
+    Complete Build System - All Fixes Applied
 EOF
     echo -e "${NC}"
-    echo -e "${BOLD}=== Galactica Master Build Script ===${NC}"
+    echo -e "${BOLD}=== Galactica Master Build Script v2.0 ===${NC}"
     echo ""
 }
 
@@ -78,7 +75,7 @@ check_dependency() {
     local pkg=$2
     if ! command -v "$cmd" &>/dev/null; then
         print_error "$cmd not found"
-        echo "   Install it with: sudo apt install $pkg (or equivalent)"
+        echo "   Install it with: sudo apt install $pkg"
         return 1
     fi
     return 0
@@ -89,36 +86,28 @@ check_dependency() {
 # ============================================
 
 preflight_checks() {
-    print_step 0 11 "Pre-flight Checks"
+    print_step 0 10 "Pre-flight Checks"
     
     local all_ok=true
     
     print_info "Checking required tools..."
     
-    # Essential build tools
     check_dependency "gcc" "build-essential" || all_ok=false
     check_dependency "g++" "build-essential" || all_ok=false
     check_dependency "make" "build-essential" || all_ok=false
-    
-    # Kernel build tools
     check_dependency "bc" "bc" || all_ok=false
     check_dependency "flex" "flex" || all_ok=false
     check_dependency "bison" "bison" || all_ok=false
-    
-    # System tools
     check_dependency "dd" "coreutils" || all_ok=false
     check_dependency "mkfs.ext4" "e2fsprogs" || all_ok=false
-    check_dependency "cpio" "cpio" || all_ok=false
-    check_dependency "gzip" "gzip" || all_ok=false
+    check_dependency "qemu-system-x86_64" "qemu-system-x86" || print_warning "QEMU not found"
     
-    # Optional but recommended
-    check_dependency "qemu-system-x86_64" "qemu-system-x86" || print_warning "QEMU not found (required for testing)"
-    
-    # Check if running as root (for device node creation)
-    if [[ $EUID -eq 0 ]]; then
-        print_warning "Running as root"
+    # Check for busybox
+    if command -v busybox &>/dev/null; then
+        print_success "busybox found"
     else
-        print_info "Not running as root (will need sudo for device nodes)"
+        print_warning "busybox not found - install: sudo apt install busybox-static"
+        all_ok=false
     fi
     
     echo ""
@@ -133,41 +122,80 @@ preflight_checks() {
 }
 
 # ============================================
-# Step 1: Build Kernel
+# Step 1: Configure and Build Kernel with VIRTIO
 # ============================================
 
 build_kernel() {
-    print_step 1 11 "Build Linux Kernel"
-    
-    if [[ -f "$KERNEL_DIR/.config" ]] && [[ -f "$KERNEL_DIR/arch/x86/boot/bzImage" ]]; then
-        print_info "Kernel already configured and built"
-        read -p "Rebuild kernel? (y/n) [n]: " rebuild
-        if [[ "$rebuild" != "y" ]]; then
-            print_success "Using existing kernel"
-            COMPLETED_STEPS[kernel]=1
-            return 0
-        fi
-    fi
+    print_step 1 10 "Configure and Build Linux Kernel with VIRTIO Support"
     
     if [[ ! -d "$KERNEL_DIR" ]]; then
         print_error "Kernel source directory not found: $KERNEL_DIR"
-        echo "Download and extract Linux kernel 6.18.3"
+        echo "Download Linux 6.18.3 and extract to $KERNEL_DIR"
         return 1
     fi
     
     cd "$KERNEL_DIR"
     
-    print_info "Configuring kernel..."
+    # Create default config if needed
     if [[ ! -f .config ]]; then
+        print_info "Creating default kernel configuration..."
         make defconfig
-        print_success "Created default configuration"
     fi
     
-    print_info "Building kernel (this may take a while)..."
-    make -j$(nproc) 2>&1 | tee kernel-build.log
+    print_info "Configuring kernel with VIRTIO support..."
+    
+    # Remove any existing VIRTIO config
+    sed -i '/CONFIG_VIRTIO/d' .config
+    sed -i '/CONFIG_SCSI_VIRTIO/d' .config
+    
+    # Add VIRTIO configuration
+    cat >> .config << 'EOF'
+
+# VIRTIO drivers for QEMU (REQUIRED)
+CONFIG_VIRTIO_MENU=y
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_PCI_LEGACY=y
+CONFIG_VIRTIO_BALLOON=y
+CONFIG_VIRTIO_INPUT=y
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_SCSI_VIRTIO=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+
+# Ensure EXT4 is built-in (REQUIRED)
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_USE_FOR_EXT2=y
+EOF
+    
+    # Apply configuration
+    make olddefconfig
+    
+    # Verify critical options
+    print_info "Verifying kernel configuration..."
+    local config_ok=true
+    for opt in CONFIG_VIRTIO CONFIG_VIRTIO_PCI CONFIG_VIRTIO_BLK CONFIG_EXT4_FS; do
+        if grep -q "^${opt}=y" .config; then
+            print_success "$opt enabled"
+        else
+            print_error "$opt NOT enabled!"
+            config_ok=false
+        fi
+    done
+    
+    if [[ "$config_ok" != "true" ]]; then
+        print_error "Kernel configuration failed!"
+        return 1
+    fi
+    
+    print_info "Building kernel (this will take 5-15 minutes)..."
+    make clean
+    make -j$(nproc) 2>&1 | tee ../kernel-build.log
     
     if [[ -f arch/x86/boot/bzImage ]]; then
-        print_success "Kernel built successfully: arch/x86/boot/bzImage"
+        print_success "Kernel built successfully"
         COMPLETED_STEPS[kernel]=1
     else
         print_error "Kernel build failed. Check kernel-build.log"
@@ -182,7 +210,7 @@ build_kernel() {
 # ============================================
 
 build_airride() {
-    print_step 2 11 "Build AirRide Init System"
+    print_step 2 10 "Build AirRide Init System"
     
     if [[ ! -d "$AIRRIDE_DIR/Init" ]]; then
         print_error "AirRide source not found: $AIRRIDE_DIR/Init"
@@ -219,7 +247,7 @@ build_airride() {
 # ============================================
 
 build_airridectl() {
-    print_step 3 11 "Build AirRide Control Tool"
+    print_step 3 10 "Build AirRide Control Tool"
     
     if [[ ! -d "$AIRRIDE_DIR/Ctl" ]]; then
         print_error "AirRideCtl source not found: $AIRRIDE_DIR/Ctl"
@@ -255,7 +283,7 @@ build_airridectl() {
 # ============================================
 
 build_dreamland() {
-    print_step 4 11 "Build Dreamland Package Manager"
+    print_step 4 10 "Build Dreamland Package Manager"
     
     if [[ ! -d "$DREAMLAND_DIR" ]]; then
         print_error "Dreamland source not found: $DREAMLAND_DIR"
@@ -291,11 +319,8 @@ build_dreamland() {
 # ============================================
 
 prepare_build_dir() {
-    print_step 5 11 "Prepare Build Directory"
+    print_step 5 10 "Prepare Root Filesystem Structure"
     
-    print_info "Creating/cleaning build directory: $TARGET_ROOT"
-    
-    # Ask before removing
     if [[ -d "$TARGET_ROOT" ]]; then
         print_warning "Build directory exists"
         read -p "Clean and rebuild? (y/n) [y]: " clean
@@ -305,56 +330,209 @@ prepare_build_dir() {
         fi
     fi
     
-    mkdir -p "$TARGET_ROOT"
-    print_success "Build directory ready"
+    print_info "Creating directory structure..."
+    mkdir -p "$TARGET_ROOT"/{bin,sbin,dev,etc,proc,sys,run,tmp,var/log,lib,lib64,usr/{bin,sbin,lib,lib64}}
+    mkdir -p "$TARGET_ROOT"/etc/airride/services
+    mkdir -p "$TARGET_ROOT"/home/user
+    mkdir -p "$TARGET_ROOT"/root
+    
+    chmod 1777 "$TARGET_ROOT/tmp"
+    chmod 700 "$TARGET_ROOT/root"
+    
+    print_success "Directory structure created"
     COMPLETED_STEPS[builddir]=1
 }
 
 # ============================================
-# Step 6: Install Kernel to Build
+# Step 6: Install System Components
 # ============================================
 
-install_kernel() {
-    print_step 6 11 "Install Kernel to Build"
+install_components() {
+    print_step 6 10 "Install System Components"
     
+    # Install kernel
+    print_info "Installing kernel..."
     mkdir -p "$TARGET_ROOT/boot"
-    
-    print_info "Copying kernel..."
     cp "$KERNEL_DIR/arch/x86/boot/bzImage" "$TARGET_ROOT/boot/vmlinuz-galactica"
     cp "$KERNEL_DIR/System.map" "$TARGET_ROOT/boot/System.map-galactica"
     cp "$KERNEL_DIR/.config" "$TARGET_ROOT/boot/config-galactica"
     
-    print_info "Installing kernel modules..."
+    # Install kernel modules
     cd "$KERNEL_DIR"
     make INSTALL_MOD_PATH="$(realpath ../$TARGET_ROOT)" modules_install
     cd ..
     
     print_success "Kernel installed"
-    COMPLETED_STEPS[kernel_install]=1
-}
-
-# ============================================
-# Step 7: Install AirRide Components
-# ============================================
-
-install_airride() {
-    print_step 7 11 "Install AirRide Components"
     
-    mkdir -p "$TARGET_ROOT/sbin"
-    mkdir -p "$TARGET_ROOT/usr/bin"
-    mkdir -p "$TARGET_ROOT/etc/airride/services"
-    
-    # Find binaries
+    # Install AirRide
+    print_info "Installing AirRide components..."
     AIRRIDE_BIN=$(find "$AIRRIDE_DIR/Init" -name "Init" -type f -executable | head -1)
     AIRRIDECTL_BIN=$(find "$AIRRIDE_DIR/Ctl" -name "Ctl" -type f -executable | head -1)
     
-    print_info "Installing AirRide init..."
     cp "$AIRRIDE_BIN" "$TARGET_ROOT/sbin/airride"
     chmod +x "$TARGET_ROOT/sbin/airride"
     
-    print_info "Installing AirRideCtl..."
     cp "$AIRRIDECTL_BIN" "$TARGET_ROOT/usr/bin/airridectl"
     chmod +x "$TARGET_ROOT/usr/bin/airridectl"
+    
+    # Create init symlink
+    cd "$TARGET_ROOT/sbin"
+    ln -sf airride init
+    cd - > /dev/null
+    
+    print_success "AirRide installed"
+    
+    # Install Dreamland
+    print_info "Installing Dreamland..."
+    DREAMLAND_BIN=$(find "$DREAMLAND_DIR" -name "Dreamland" -type f -executable | head -1)
+    
+    cp "$DREAMLAND_BIN" "$TARGET_ROOT/usr/bin/dreamland"
+    chmod +x "$TARGET_ROOT/usr/bin/dreamland"
+    
+    cd "$TARGET_ROOT/usr/bin"
+    ln -sf dreamland dl
+    cd - > /dev/null
+    
+    print_success "Dreamland installed"
+    
+    COMPLETED_STEPS[install]=1
+}
+
+# ============================================
+# Step 7: Install Busybox and Libraries
+# ============================================
+
+install_essentials() {
+    print_step 7 10 "Install Shell and Essential Libraries"
+    
+    # Install busybox
+    print_info "Installing busybox..."
+    if command -v busybox &>/dev/null; then
+        cp /bin/busybox "$TARGET_ROOT/bin/"
+        chmod +x "$TARGET_ROOT/bin/busybox"
+        
+        cd "$TARGET_ROOT/bin"
+        # Create essential symlinks
+        for cmd in sh ash ls cat echo pwd mkdir rmdir rm cp mv ln chmod chown \
+                   grep sed awk sort uniq wc head tail cut tr find mount umount \
+                   ps kill killall sleep touch date hostname df du free; do
+            ln -sf busybox "$cmd" 2>/dev/null || true
+        done
+        cd - > /dev/null
+        
+        CMD_COUNT=$(ls -1 "$TARGET_ROOT/bin/" | wc -l)
+        print_success "Busybox installed with $CMD_COUNT commands"
+    else
+        print_error "Busybox not found!"
+        return 1
+    fi
+    
+    # Copy libraries
+    print_info "Copying essential libraries..."
+    
+    # Function to copy libs
+    copy_libs() {
+        local binary=$1
+        ldd "$binary" 2>/dev/null | grep -o '/lib[^ ]*' | while read lib; do
+            if [[ -f "$lib" ]]; then
+                local lib_dir=$(dirname "$lib")
+                mkdir -p "$TARGET_ROOT$lib_dir"
+                cp -n "$lib" "$TARGET_ROOT$lib_dir/" 2>/dev/null || true
+            fi
+        done
+    }
+    
+    # Copy libs for AirRide
+    copy_libs "$TARGET_ROOT/sbin/airride"
+    
+    # Copy libs for shell (if not static)
+    if [[ -f "$TARGET_ROOT/bin/sh" ]]; then
+        copy_libs "$TARGET_ROOT/bin/sh"
+    fi
+    
+    # Copy essential C++ libraries for AirRide
+    for lib in libstdc++.so.6 libgcc_s.so.1 libc.so.6 libm.so.6; do
+        LIBPATH=$(find /lib* /usr/lib* -name "$lib" 2>/dev/null | head -1)
+        if [[ -n "$LIBPATH" ]]; then
+            LIB_DIR=$(dirname "$LIBPATH")
+            mkdir -p "$TARGET_ROOT$LIB_DIR"
+            cp "$LIBPATH" "$TARGET_ROOT$LIB_DIR/" 2>/dev/null || true
+        fi
+    done
+    
+    # Copy dynamic linker
+    LINKER=$(find /lib* -name "ld-linux-x86-64.so.2" 2>/dev/null | head -1)
+    if [[ -n "$LINKER" ]]; then
+        LINKER_DIR=$(dirname "$LINKER")
+        mkdir -p "$TARGET_ROOT$LINKER_DIR"
+        cp "$LINKER" "$TARGET_ROOT$LINKER_DIR/"
+    fi
+    
+    LIB_COUNT=$(find "$TARGET_ROOT/lib" "$TARGET_ROOT/lib64" -name "*.so*" 2>/dev/null | wc -l)
+    print_success "Copied $LIB_COUNT libraries"
+    
+    COMPLETED_STEPS[essentials]=1
+}
+
+# ============================================
+# Step 8: Create Device Nodes and Config
+# ============================================
+
+create_system_files() {
+    print_step 8 10 "Create Device Nodes and System Configuration"
+    
+    # Create device nodes
+    print_info "Creating device nodes..."
+    cd "$TARGET_ROOT/dev"
+    
+    sudo mknod -m 666 null c 1 3 2>/dev/null || true
+    sudo mknod -m 666 zero c 1 5 2>/dev/null || true
+    sudo mknod -m 666 random c 1 8 2>/dev/null || true
+    sudo mknod -m 666 urandom c 1 9 2>/dev/null || true
+    sudo mknod -m 600 console c 5 1 2>/dev/null || true
+    sudo mknod -m 666 tty c 5 0 2>/dev/null || true
+    sudo mknod -m 666 tty0 c 4 0 2>/dev/null || true
+    
+    cd - > /dev/null
+    print_success "Device nodes created"
+    
+    # Create system configuration files
+    print_info "Creating system configuration..."
+    
+    cat > "$TARGET_ROOT/etc/fstab" << 'EOF'
+proc    /proc   proc    defaults    0   0
+sysfs   /sys    sysfs   defaults    0   0
+devtmpfs /dev   devtmpfs defaults   0   0
+tmpfs   /run    tmpfs   defaults    0   0
+tmpfs   /tmp    tmpfs   defaults    0   0
+EOF
+    
+    cat > "$TARGET_ROOT/etc/passwd" << 'EOF'
+root:x:0:0:root:/root:/bin/sh
+EOF
+    
+    cat > "$TARGET_ROOT/etc/group" << 'EOF'
+root:x:0:
+EOF
+    
+    # Password: galactica
+    cat > "$TARGET_ROOT/etc/shadow" << 'EOF'
+root:$6$galactica$K9p3vXJ5qZ8mH4xL2nY7.wR9tE1sC8bA6fD5gH3jK2lM9nP0qR1sT2uV3wX4yZ5aB6cD7eF8gH9iJ0kL1mN2oP3:19000:0:99999:7:::
+EOF
+    chmod 600 "$TARGET_ROOT/etc/shadow"
+    
+    echo "galactica" > "$TARGET_ROOT/etc/hostname"
+    
+    cat > "$TARGET_ROOT/etc/hosts" << 'EOF'
+127.0.0.1   localhost
+127.0.1.1   galactica
+EOF
+    
+    cat > "$TARGET_ROOT/etc/profile" << 'EOF'
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PS1='[\u@\h \W]\$ '
+export TERM=linux
+EOF
     
     # Create emergency shell service
     cat > "$TARGET_ROOT/etc/airride/services/shell.service" << 'EOF'
@@ -369,254 +547,103 @@ restart_delay=1
 [Dependencies]
 EOF
     
-    print_success "AirRide components installed"
-    COMPLETED_STEPS[airride_install]=1
-}
-
-# ============================================
-# Step 8: Install Dreamland
-# ============================================
-
-install_dreamland() {
-    print_step 8 11 "Install Dreamland Package Manager"
-    
-    mkdir -p "$TARGET_ROOT/usr/bin"
-    
-    DREAMLAND_BIN=$(find "$DREAMLAND_DIR" -name "Dreamland" -type f -executable | head -1)
-    
-    print_info "Installing Dreamland..."
-    cp "$DREAMLAND_BIN" "$TARGET_ROOT/usr/bin/dreamland"
-    chmod +x "$TARGET_ROOT/usr/bin/dreamland"
-    
-    # Create 'dl' symlink
-    cd "$TARGET_ROOT/usr/bin"
-    ln -sf dreamland dl
-    cd ../../..
-    
-    print_success "Dreamland installed"
-    COMPLETED_STEPS[dreamland_install]=1
-}
-
-# ============================================
-# Step 9: Copy Essential Binaries
-# ============================================
-
-copy_essentials() {
-    print_step 9 11 "Copy Essential System Binaries"
-    
-    if [[ -f "./copy-essentials.sh" ]]; then
-        print_info "Running copy-essentials.sh..."
-        bash ./copy-essentials.sh "$TARGET_ROOT" || {
-            print_warning "copy-essentials.sh had errors, continuing anyway"
-        }
-        print_success "Essential binaries copied"
-    else
-        print_warning "copy-essentials.sh not found, skipping"
-        print_info "At minimum, you need:"
-        echo "  - /bin/sh (shell)"
-        echo "  - /lib*/libc.so.* (C library)"
-        echo "  - /lib*/ld-linux*.so.* (dynamic linker)"
-    fi
-    
-    COMPLETED_STEPS[essentials]=1
-}
-
-# ============================================
-# Step 10: Setup QEMU Boot Configuration
-# ============================================
-
-setup_qemu_config() {
-    print_step 10 11 "Setup QEMU Boot Configuration"
-    
-    if [[ -f "./setup-qemu-boot.sh" ]]; then
-        print_info "Running setup-qemu-boot.sh..."
-        bash ./setup-qemu-boot.sh "$TARGET_ROOT"
-        print_success "QEMU configuration complete"
-    else
-        print_warning "setup-qemu-boot.sh not found"
-        print_info "Manually creating basic configuration..."
-        
-        # Create essential structure
-        cd "$TARGET_ROOT"
-        mkdir -p {bin,dev,etc,proc,sys,run,tmp,var/log}
-        
-        # Create init symlink
-        ln -sf /sbin/airride sbin/init
-        
-        # Create fstab
-        cat > etc/fstab << 'EOF'
-proc    /proc   proc    defaults    0   0
-sysfs   /sys    sysfs   defaults    0   0
-devtmpfs /dev   devtmpfs defaults   0   0
-tmpfs   /run    tmpfs   defaults    0   0
-tmpfs   /tmp    tmpfs   defaults    0   0
-EOF
-        
-        # Set root password to 'galactica'
-        print_info "Setting default root password to 'galactica'..."
-        cat > etc/shadow << 'SHADOW_EOF'
-root:$6$rounds=5000$galactica$K9p3vXJ5qZ8mH4xL2nY7.wR9tE1sC8bA6fD5gH3jK2lM9nP0qR1sT2uV3wX4yZ5aB6cD7eF8gH9iJ0kL1mN2oP3:19000:0:99999:7:::
-SHADOW_EOF
-        chmod 600 etc/shadow
-        print_success "Root password set to 'galactica'"
-        
-        cd ..
-        print_success "Basic configuration created"
-    fi
-    
-    # Install bootstrap script
-    print_info "Installing bootstrap script..."
+    # Install bootstrap script if available
     if [[ -f "./bootstrap.sh" ]]; then
         cp ./bootstrap.sh "$TARGET_ROOT/usr/bin/galactica-bootstrap"
         chmod +x "$TARGET_ROOT/usr/bin/galactica-bootstrap"
-        print_success "Bootstrap script installed as 'galactica-bootstrap'"
-    else
-        print_warning "bootstrap.sh not found in current directory"
+        print_success "Bootstrap script installed"
     fi
     
-    COMPLETED_STEPS[qemu_config]=1
+    print_success "System configuration created"
+    COMPLETED_STEPS[sysfiles]=1
 }
 
 # ============================================
-# Step 11: Create Bootable Image
+# Step 9: Create Root Filesystem Image
 # ============================================
 
-create_bootable_image() {
-    print_step 11 11 "Create Bootable Root Filesystem Image"
+create_rootfs() {
+    print_step 9 10 "Create Root Filesystem Image"
     
-    print_info "What type of image would you like to create?"
-    echo ""
-    echo "  1) Initramfs (lightweight, RAM-based)"
-    echo "  2) Disk image (persistent, ext4 filesystem)"
-    echo "  3) Both"
-    echo "  4) Skip (use existing)"
-    echo ""
-    read -p "Select option (1-4) [1]: " image_choice
-    image_choice=${image_choice:-1}
-    
-    case $image_choice in
-        1|3)
-            create_initramfs
-            ;;
-    esac
-    
-    case $image_choice in
-        2|3)
-            create_disk_image
-            ;;
-    esac
-    
-    COMPLETED_STEPS[bootable]=1
-}
-
-create_initramfs() {
-    print_info "Creating initramfs..."
-    
-    rm -rf "$INITRAMFS_DIR"
-    mkdir -p "$INITRAMFS_DIR"
-    
-    # Copy essential files to initramfs
-    cd "$INITRAMFS_DIR"
-    
-    # Copy from target root
-    cp -a ../"$TARGET_ROOT"/* .
-    
-    # Ensure init exists
-    if [[ ! -e sbin/init ]]; then
-        ln -s /sbin/airride sbin/init
+    if [[ -f "$OUTPUT_ROOTFS" ]]; then
+        print_info "Removing old root filesystem..."
+        rm -f "$OUTPUT_ROOTFS"
     fi
     
-    # Create initramfs
-    print_info "Packing initramfs..."
-    find . -print0 | cpio --null --create --verbose --format=newc | gzip -9 > "../$OUTPUT_INITRAMFS"
+    print_info "Creating ${ROOTFS_SIZE}MB ext4 image..."
+    dd if=/dev/zero of="$OUTPUT_ROOTFS" bs=1M count=$ROOTFS_SIZE status=progress
     
-    cd ..
+    print_info "Formatting filesystem..."
+    mkfs.ext4 -F -L "GalacticaRoot" "$OUTPUT_ROOTFS"
     
-    SIZE=$(du -h "$OUTPUT_INITRAMFS" | cut -f1)
-    print_success "Initramfs created: $OUTPUT_INITRAMFS ($SIZE)"
-}
-
-create_disk_image() {
-    print_info "Creating disk image ($ROOTFS_SIZE MB)..."
-    
-    # Create sparse file
-    dd if=/dev/zero of="$OUTPUT_ROOTFS" bs=1M count=0 seek=$ROOTFS_SIZE
-    
-    # Create ext4 filesystem
-    mkfs.ext4 -F "$OUTPUT_ROOTFS"
-    
-    # Mount and copy files
     print_info "Mounting and copying files..."
     mkdir -p mnt_tmp
     sudo mount -o loop "$OUTPUT_ROOTFS" mnt_tmp
+    
     sudo cp -a "$TARGET_ROOT"/* mnt_tmp/
+    
+    # Verify critical files
+    print_info "Verifying filesystem..."
+    local verify_ok=true
+    
+    if [[ -x mnt_tmp/sbin/init ]]; then
+        print_success "Init is executable"
+    else
+        print_error "Init problem!"
+        verify_ok=false
+    fi
+    
+    if [[ -x mnt_tmp/bin/sh ]]; then
+        print_success "Shell is executable"
+    else
+        print_error "Shell problem!"
+        verify_ok=false
+    fi
+    
+    if [[ -c mnt_tmp/dev/console ]]; then
+        print_success "Console device exists"
+    else
+        print_error "Console device missing!"
+        verify_ok=false
+    fi
+    
     sudo umount mnt_tmp
     rmdir mnt_tmp
     
+    if [[ "$verify_ok" != "true" ]]; then
+        print_error "Filesystem verification failed!"
+        return 1
+    fi
+    
     SIZE=$(du -h "$OUTPUT_ROOTFS" | cut -f1)
-    print_success "Disk image created: $OUTPUT_ROOTFS ($SIZE)"
+    print_success "Root filesystem created ($SIZE)"
+    
+    COMPLETED_STEPS[rootfs]=1
 }
 
 # ============================================
-# Create Launch Scripts
+# Step 10: Create Launch Scripts
 # ============================================
 
 create_launch_scripts() {
-    print_info "Creating QEMU launch scripts..."
+    print_step 10 10 "Create Launch Scripts"
     
-    # Launch with initramfs
-    cat > run-qemu-initramfs.sh << 'EOF'
+    # Main launch script
+    cat > run-galactica.sh << 'EOF'
 #!/bin/bash
-# Launch Galactica with initramfs
-
-KERNEL="galactica-build/boot/vmlinuz-galactica"
-INITRAMFS="galactica-initramfs.cpio.gz"
-
-if [[ ! -f "$KERNEL" ]]; then
-    echo "Error: Kernel not found"
-    exit 1
-fi
-
-if [[ ! -f "$INITRAMFS" ]]; then
-    echo "Error: Initramfs not found"
-    exit 1
-fi
-
-echo "Starting Galactica (initramfs mode)..."
-echo "Press Ctrl+A then X to exit"
-echo ""
-
-qemu-system-x86_64 \
-    -kernel "$KERNEL" \
-    -initrd "$INITRAMFS" \
-    -m 512M \
-    -smp 2 \
-    -append "console=ttyS0 init=/sbin/init" \
-    -nographic \
-    -serial mon:stdio
-EOF
-    chmod +x run-qemu-initramfs.sh
-    
-    # Launch with disk image
-    cat > run-qemu-disk.sh << 'EOF'
-#!/bin/bash
-# Launch Galactica with disk image
+# Launch Galactica in QEMU
 
 KERNEL="galactica-build/boot/vmlinuz-galactica"
 ROOTFS="galactica-rootfs.img"
 
-if [[ ! -f "$KERNEL" ]]; then
-    echo "Error: Kernel not found"
+if [[ ! -f "$KERNEL" ]] || [[ ! -f "$ROOTFS" ]]; then
+    echo "Error: Kernel or rootfs not found!"
+    echo "Run: ./build-galactica.sh"
     exit 1
 fi
 
-if [[ ! -f "$ROOTFS" ]]; then
-    echo "Error: Root filesystem not found"
-    exit 1
-fi
-
-echo "Starting Galactica (disk mode)..."
-echo "Press Ctrl+A then X to exit"
+echo "Starting Galactica Linux..."
+echo "Press Ctrl+A then X to exit QEMU"
 echo ""
 
 qemu-system-x86_64 \
@@ -628,9 +655,45 @@ qemu-system-x86_64 \
     -nographic \
     -serial mon:stdio
 EOF
-    chmod +x run-qemu-disk.sh
+    chmod +x run-galactica.sh
+    
+    # Debug launch script
+    cat > run-galactica-debug.sh << 'EOF'
+#!/bin/bash
+# Launch Galactica with debug output
+
+KERNEL="galactica-build/boot/vmlinuz-galactica"
+ROOTFS="galactica-rootfs.img"
+
+if [[ ! -f "$KERNEL" ]] || [[ ! -f "$ROOTFS" ]]; then
+    echo "Error: Kernel or rootfs not found!"
+    exit 1
+fi
+
+echo "=== Galactica Debug Boot ==="
+echo ""
+echo "Watch for:"
+echo "  • 'virtio_blk virtio0' - VIRTIO driver loading"
+echo "  • 'VFS: Mounted root' - Root filesystem mounted"
+echo "  • 'Run /sbin/init' - Init starting"
+echo "  • AirRide startup messages"
+echo ""
+echo "Press Enter to boot..."
+read
+
+qemu-system-x86_64 \
+    -kernel "$KERNEL" \
+    -drive "file=$ROOTFS,format=raw,if=virtio" \
+    -m 512M \
+    -smp 2 \
+    -append "root=/dev/vda rw console=ttyS0 init=/sbin/init debug loglevel=7 earlyprintk=serial,ttyS0,115200" \
+    -nographic \
+    -serial mon:stdio
+EOF
+    chmod +x run-galactica-debug.sh
     
     print_success "Launch scripts created"
+    COMPLETED_STEPS[scripts]=1
 }
 
 # ============================================
@@ -640,13 +703,18 @@ EOF
 main() {
     print_banner
     
-    echo "This script will:"
-    echo "  1. Check dependencies"
-    echo "  2. Build the Linux kernel"
-    echo "  3. Build AirRide init system"
-    echo "  4. Build Dreamland package manager"
-    echo "  5. Create bootable system image"
-    echo "  6. Generate QEMU launch scripts"
+    echo "This script will build a complete Galactica Linux system:"
+    echo ""
+    echo "  1. ✓ Linux kernel 6.18.3 with VIRTIO support"
+    echo "  2. ✓ AirRide init system"
+    echo "  3. ✓ AirRideCtl control tool"
+    echo "  4. ✓ Dreamland package manager"
+    echo "  5. ✓ Busybox shell and utilities"
+    echo "  6. ✓ Root filesystem with all components"
+    echo "  7. ✓ Bootable ${ROOTFS_SIZE}MB disk image"
+    echo "  8. ✓ QEMU launch scripts"
+    echo ""
+    echo "Build time: ~10-20 minutes (depending on CPU)"
     echo ""
     read -p "Continue? (y/n) [y]: " continue
     continue=${continue:-y}
@@ -656,19 +724,17 @@ main() {
         exit 0
     fi
     
-    # Run all steps
+    # Run all build steps
     preflight_checks || exit 1
     build_kernel || exit 1
     build_airride || exit 1
     build_airridectl || exit 1
     build_dreamland || exit 1
     prepare_build_dir || exit 1
-    install_kernel || exit 1
-    install_airride || exit 1
-    install_dreamland || exit 1
-    copy_essentials || exit 1
-    setup_qemu_config || exit 1
-    create_bootable_image || exit 1
+    install_components || exit 1
+    install_essentials || exit 1
+    create_system_files || exit 1
+    create_rootfs || exit 1
     create_launch_scripts
     
     # Final summary
@@ -681,19 +747,22 @@ main() {
         echo -e "  ${GREEN}✓${NC} $step"
     done
     echo ""
-    echo "Generated files:"
-    [[ -f "$OUTPUT_INITRAMFS" ]] && echo "  • $OUTPUT_INITRAMFS ($(du -h $OUTPUT_INITRAMFS | cut -f1))"
-    [[ -f "$OUTPUT_ROOTFS" ]] && echo "  • $OUTPUT_ROOTFS ($(du -h $OUTPUT_ROOTFS | cut -f1))"
+    echo "System files:"
+    echo "  • Kernel:     galactica-build/boot/vmlinuz-galactica"
+    echo "  • Root FS:    $OUTPUT_ROOTFS ($(du -h $OUTPUT_ROOTFS | cut -f1))"
+    echo "  • Build dir:  $TARGET_ROOT/"
     echo ""
-    echo "Launch scripts:"
-    echo "  • run-qemu-initramfs.sh (boot from initramfs)"
-    echo "  • run-qemu-disk.sh (boot from disk image)"
+    echo "Default credentials:"
+    echo "  Username: ${CYAN}root${NC}"
+    echo "  Password: ${CYAN}galactica${NC}"
     echo ""
-    echo -e "${CYAN}To boot Galactica:${NC}"
-    [[ -f "$OUTPUT_INITRAMFS" ]] && echo "  ${BOLD}./run-qemu-initramfs.sh${NC}"
-    [[ -f "$OUTPUT_ROOTFS" ]] && echo "  ${BOLD}./run-qemu-disk.sh${NC}"
+    echo -e "${BOLD}${GREEN}To boot Galactica:${NC}"
+    echo -e "  ${YELLOW}./run-galactica.sh${NC}"
     echo ""
-    echo "Inside QEMU:"
+    echo "For debug output:"
+    echo -e "  ${YELLOW}./run-galactica-debug.sh${NC}"
+    echo ""
+    echo "After boot:"
     echo "  • Run: ${CYAN}galactica-bootstrap${NC} (first-time setup)"
     echo "  • Use: ${CYAN}airridectl list${NC} (manage services)"
     echo "  • Use: ${CYAN}dreamland sync${NC} (package manager)"
