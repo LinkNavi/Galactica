@@ -335,12 +335,13 @@ build_dreamland() {
     cd "$DREAMLAND_DIR"
     mkdir -p build
     
-    # Check for libarchive
-    if ! pkg-config --exists libarchive 2>/dev/null; then
-        print_warning "libarchive not found, trying anyway..."
-    fi
-    
+    # Build with static linking for curl
     g++ -o build/dreamland src/main.cpp \
+        -std=c++17 -O2 -Wall -Wextra \
+        -static-libgcc -static-libstdc++ \
+        -lcurl -lssl -lcrypto -lz -lzstd -larchive -lpthread \
+        -lnghttp2 -lnghttp3 -lngtcp2 -lngtcp2_crypto_openssl \
+        || g++ -o build/dreamland src/main.cpp \
         -std=c++17 -O2 -Wall -Wextra \
         -lcurl -lssl -lcrypto -lz -lzstd -larchive -lpthread || return 1
     
