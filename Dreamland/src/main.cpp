@@ -11,7 +11,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <curl/curl.h>
-
+#include <functional>
 namespace fs = std::filesystem;
 
 // Colors
@@ -397,41 +397,7 @@ private:
         return "";
     }
 
-    // Load installed packages database
-    void load_installed() {
-        if (!fs::exists(installed_db)) {
-            print_debug("No installed packages database: " + installed_db);
-            return;
-        }
-
-        std::ifstream file(installed_db);
-        if (!file.is_open()) {
-            print_warning("Cannot read installed database: " + installed_db);
-            return;
-        }
-        
-        std::string line;
-        int count = 0;
-        
-        while (std::getline(file, line)) {
-            if (line.empty()) continue;
-            
-            size_t space_pos = line.find(' ');
-            if (space_pos != std::string::npos) {
-                std::string name = line.substr(0, space_pos);
-                std::string version = line.substr(space_pos + 1);
-                
-                Package pkg;
-                pkg.name = name;
-                pkg.version = version;
-                pkg.installed = true;
-                installed[name] = pkg;
-                count++;
-            }
-        }
-        
-        print_debug("Loaded " + std::to_string(count) + " installed packages");
-    }
+  
 
     // Save installed packages database
     void save_installed() {
@@ -685,8 +651,7 @@ public:
     ~Dreamland() {
         curl_global_cleanup();
     }
-    
-    // Make these public for main() to access
+       // Load installed packages database
     void load_installed() {
         if (!fs::exists(installed_db)) {
             print_debug("No installed packages database: " + installed_db);
@@ -721,40 +686,7 @@ public:
         
         print_debug("Loaded " + std::to_string(count) + " installed packages");
     }
-    
-    std::set<std::string> find_dependents(const std::string& pkg_name) {
-        std::set<std::string> dependents;
-        
-        // Check all installed packages
-        for (const auto& [name, pkg] : installed) {
-            // Load package definition if not in cache
-            if (packages.find(name) == packages.end()) {
-                std::string pkg_path = find_package_path(name);
-                if (!pkg_path.empty()) {
-                    download_package_definition(pkg_path);
-                    std::string local_pkg = cache_dir + "/" + pkg_path;
-                    Package loaded_pkg;
-                    if (parse_package(local_pkg, loaded_pkg)) {
-                        packages[name] = loaded_pkg;
-                    }
-                }
-            }
-            
-            // Check if this package depends on pkg_name
-            if (packages.count(name)) {
-                const Package& p = packages[name];
-                for (const auto& dep : p.dependencies) {
-                    if (dep == pkg_name) {
-                        dependents.insert(name);
-                        break;
-                    }
-                }
-            }
-        }
-        
-        return dependents;
-    }
-    
+    // Make these public for main() to access
     bool remove_package(const std::string& pkg_name, bool auto_remove = false) {
         if (installed.find(pkg_name) == installed.end()) {
             print_warning(pkg_name + " is not installed");
@@ -1182,154 +1114,7 @@ public:
     }
     
     // Remove a package and optionally its dependencies
-    bool remove_package(const std::string& pkg_name, bool auto_remove = false) {
-        load_installed();
-        
-        if (installed.find(pkg_name) == installed.end()) {
-            print_warning(pkg_name + " is not installed");
-            return false;
-        }
-        
-        print_banner();
-        std::cout << "Removing: " << PINK << pkg_name << RESET << "\n\n";
-        
-        // Find packages that depend on this one
-        std::set<std::string> dependents = find_dependents(pkg_name);
-        
-        if (!dependents.empty() && !auto_remove) {
-            print_error("Cannot remove " + pkg_name);
-            std::cout << "\nThe following packages depend on it:\n";
-            for (const auto& dep : dependents) {
-                std::cout << "  • " << YELLOW << dep << RESET << "\n";
-            }
-            std::cout << "\nTo remove anyway (breaking these packages):\n";
-            std::cout << "  dreamland remove --force " << pkg_name << "\n";
-            std::cout << "\nTo remove with dependents:\n";
-            std::cout << "  dreamland remove --cascade " << pkg_name << "\n";
-            return false;
-        }
-        
-        // Uninstall the package
-        print_status("Uninstalling " + pkg_name + "...");
-        
-        // Try to find and run package-specific uninstall script
-        bool uninstall_success = false;
-        
-        // Method 1: Check for uninstall manifest (if we tracked installed files)
-        std::string manifest = fs::path(installed_db).parent_path().string() + 
-                               "/manifests/" + pkg_name + ".files";
-        
-        if (fs::exists(manifest)) {
-            print_status("Removing installed files...");
-            std::ifstream mf(manifest);
-            std::string file;
-            int removed = 0;
-            
-            while (std::getline(mf, file)) {
-                if (fs::exists(file)) {
-                    try {
-                        fs::remove(file);
-                        removed++;
-                    } catch (...) {
-                        print_debug("Could not remove: " + file);
-                    }
-                }
-            }
-            print_success("Removed " + std::to_string(removed) + " files");
-            uninstall_success = true;
-        }
-        
-        // Method 2: Run package manager's uninstall (make uninstall, etc.)
-        if (!uninstall_success) {
-            print_warning("No uninstall manifest found");
-            print_warning("Package files may remain in /usr");
-            print_status("Attempting standard uninstall methods...");
-            
-            // Try common uninstall patterns
-            std::vector<std::string> uninstall_commands = {
-                "cd /tmp && make uninstall 2>/dev/null",
-                "cd /tmp && ninja -C build uninstall 2>/dev/null",
-                "cd /tmp && cmake --build build --target uninstall 2>/dev/null"
-            };
-            
-            for (const auto& cmd : uninstall_commands) {
-                if (execute_command(cmd) == 0) {
-                    print_success("Uninstalled using package build system");
-                    uninstall_success = true;
-                    break;
-                }
-            }
-            
-            if (!uninstall_success) {
-                print_warning("Could not automatically uninstall files");
-                print_warning("You may need to manually remove files from /usr");
-            }
-        }
-        
-        // Remove from installed database
-        installed.erase(pkg_name);
-        save_installed();
-        
-        // Remove package cache
-        std::string pkg_path = find_package_path(pkg_name);
-        if (!pkg_path.empty()) {
-            std::string local_pkg = cache_dir + "/" + pkg_path;
-            if (fs::exists(local_pkg)) {
-                fs::remove(local_pkg);
-            }
-        }
-        
-        print_success("Removed " + pkg_name + " from package database");
-        
-        // Check for orphaned dependencies (if auto-remove enabled)
-        if (auto_remove) {
-            print_status("Checking for orphaned dependencies...");
-            
-            // Load package info to get dependencies
-            if (packages.count(pkg_name)) {
-                const Package& pkg = packages[pkg_name];
-                std::vector<std::string> orphans;
-                
-                for (const auto& dep : pkg.dependencies) {
-                    // Check if any other installed package depends on this
-                    std::set<std::string> dep_dependents = find_dependents(dep);
-                    
-                    // Remove the package we just uninstalled from the set
-                    dep_dependents.erase(pkg_name);
-                    
-                    if (dep_dependents.empty() && installed.count(dep)) {
-                        orphans.push_back(dep);
-                    }
-                }
-                
-                if (!orphans.empty()) {
-                    std::cout << "\n";
-                    print_status("Found " + std::to_string(orphans.size()) + " orphaned dependencies:");
-                    for (const auto& orphan : orphans) {
-                        std::cout << "  • " << YELLOW << orphan << RESET << "\n";
-                    }
-                    
-                    std::cout << "\n";
-                    std::string confirm;
-                    std::cout << "Remove orphaned dependencies? (y/n) [y]: ";
-                    std::getline(std::cin, confirm);
-                    
-                    if (confirm.empty() || confirm == "y" || confirm == "Y") {
-                        for (const auto& orphan : orphans) {
-                            std::cout << "\n";
-                            remove_package(orphan, true);
-                        }
-                    }
-                }
-            }
-        }
-        
-        std::cout << "\n";
-        print_success("Successfully removed " + pkg_name + "!");
-        return true;
-    }
-
-    void show_usage(const std::string& prog) {
+      void show_usage(const std::string& prog) {
         print_banner();
         std::cout << "Usage: " << prog << " <command> [options]\n\n";
         std::cout << "Commands:\n";
@@ -1534,6 +1319,6 @@ int main(int argc, char* argv[]) {
         std::cerr << RED << "[✗] Fatal error: " << e.what() << RESET << std::endl;
         return 1;
     }
-}━━━" << RESET << "\n";
-            std::cout << BLUE << "Package " << current << " of " << to_install << RESET << "\n";
-            std::cout << BLUE << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+}
+

@@ -1,0 +1,22 @@
+# Build artifacts
+galactica-build/
+galactica-rootfs.img
+kernel-cache/
+linux-*/
+*.log
+
+# Temporary files
+mnt_tmp/
+.config.backup
+.config.old
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

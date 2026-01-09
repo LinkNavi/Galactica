@@ -24,7 +24,7 @@ OUTPUT_ROOTFS="galactica-rootfs.img"
 ROOTFS_SIZE=1024
 
 KERNEL_VERSION="6.18.4"  # Latest stable
-USE_PAM=true
+USE_PAM=false
 
 declare -A COMPLETED_STEPS
 
@@ -255,55 +255,114 @@ build_kernel() {
         
         cat >> .config << 'EOF'
 
-# Core system
+# ============================================
+
+# ============================================
 CONFIG_64BIT=y
 CONFIG_X86_64=y
 CONFIG_SMP=y
 CONFIG_PCI=y
 CONFIG_ACPI=y
+CONFIG_SERIAL_8250_CONSOLE=y 
+CONFIG_FILE_LOCKING=y
+CONFIG_EPOLL=y
+CONFIG_FUTEX=y
+# User/Group Management Support
+CONFIG_MULTIUSER=y
+CONFIG_SYSVIPC=y
 
-# Executable formats
+CONFIG_CROSS_MEMORY_ATTACH=y
+
+# User Namespaces (required for modern user management)
+CONFIG_USER_NS=y
+
+# UID16 support (legacy, but some tools need it)
+CONFIG_UID16=y
+
+# Audit support (optional but recommended)
+CONFIG_AUDIT=y
+CONFIG_AUDITSYSCALL=y
+
+# Capabilities (required for privilege management)
+CONFIG_SECURITY_CAPABILITIES=y
+
+# Access Control Lists
+CONFIG_FS_POSIX_ACL=y
+
+# Quotas (optional but useful)
+CONFIG_QUOTA=y
+CONFIG_QUOTACTL=y
+# ============================================
+
+# ============================================
 CONFIG_BINFMT_ELF=y
 CONFIG_BINFMT_SCRIPT=y
 
-# Memory
+# ============================================
+
+# ============================================
 CONFIG_MMU=y
 CONFIG_SLAB=y
 
-# Process
+# ============================================
+
+# ============================================
 CONFIG_UNIX=y
 CONFIG_SYSVIPC=y
 CONFIG_POSIX_MQUEUE=y
 CONFIG_SIGNALFD=y
 CONFIG_EVENTFD=y
 
-# Filesystems
+# ============================================
+
+# ============================================
 CONFIG_PROC_FS=y
 CONFIG_SYSFS=y
 CONFIG_TMPFS=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
 
-# TTY
+# ============================================
+
+# ============================================
 CONFIG_TTY=y
 CONFIG_VT=y
 CONFIG_VT_CONSOLE=y
 CONFIG_UNIX98_PTYS=y
 
-# Block devices
+
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_CORE=y
+CONFIG_SERIAL_CORE_CONSOLE=y
+CONFIG_HW_CONSOLE=y
+CONFIG_PRINTK=y
+
+
+CONFIG_VGA_CONSOLE=y
+
+# ============================================
+
+# ============================================
 CONFIG_BLOCK=y
 CONFIG_BLK_DEV=y
 
-# SCSI
+# ============================================
+
+# ============================================
 CONFIG_SCSI=y
 CONFIG_BLK_DEV_SD=y
 
-# Network
+# ============================================
+
+# ============================================
 CONFIG_NET=y
 CONFIG_INET=y
 CONFIG_PACKET=y
 
-# VIRTIO (CRITICAL!)
+# ============================================
+
+# ============================================
 CONFIG_VIRTIO_MENU=y
 CONFIG_VIRTIO=y
 CONFIG_VIRTIO_PCI=y
@@ -317,13 +376,17 @@ CONFIG_SCSI_VIRTIO=y
 CONFIG_VIRTIO_NET=y
 CONFIG_VIRTIO_CONSOLE=y
 
-# EXT4
+# ============================================
+
+# ============================================
 CONFIG_EXT4_FS=y
 CONFIG_EXT4_USE_FOR_EXT2=y
 CONFIG_EXT4_FS_POSIX_ACL=y
 CONFIG_EXT4_FS_SECURITY=y
 
-# Security hardening
+# ============================================
+
+# ============================================
 CONFIG_SECURITY=y
 CONFIG_SECURITY_NETWORK=y
 CONFIG_SECURITYFS=y
@@ -334,6 +397,85 @@ CONFIG_STACKPROTECTOR_STRONG=y
 CONFIG_STRICT_KERNEL_RWX=y
 CONFIG_PAGE_TABLE_ISOLATION=y
 CONFIG_RANDOMIZE_BASE=y
+
+# ============================================
+# ADDITIONAL CRITICAL OPTIONS YOU'RE MISSING
+
+
+
+CONFIG_EARLY_PRINTK=y
+CONFIG_EARLY_PRINTK_DBGP=y
+
+# Kernel output
+CONFIG_PRINTK_TIME=y
+
+# Devtmpfs needs this
+CONFIG_TMPFS_POSIX_ACL=y
+
+
+CONFIG_BLK_DEV_INITRD=y
+
+# Basic scheduler
+CONFIG_SCHED_DEBUG=y
+
+# Essential for userspace
+CONFIG_FUTEX=y
+CONFIG_EPOLL=y
+CONFIG_TIMERFD=y
+
+# File locking
+CONFIG_FILE_LOCKING=y
+CONFIG_MANDATORY_FILE_LOCKING=y
+
+
+CONFIG_NAMESPACES=y
+CONFIG_UTS_NS=y
+CONFIG_IPC_NS=y
+CONFIG_PID_NS=y
+CONFIG_NET_NS=y
+
+
+CONFIG_CGROUPS=y
+
+# Pseudo filesystems
+CONFIG_SYSFS_SYSCALL=y
+
+# Executable domains
+CONFIG_PROC_KCORE=y
+
+# ELF support
+CONFIG_BINFMT_ELF_FDPIC=y
+CONFIG_CORE_DUMP_DEFAULT_ELF_HEADERS=y
+
+# Misc essential options
+CONFIG_MODULES=y
+CONFIG_SYSCTL=y
+CONFIG_KALLSYMS=y
+CONFIG_PRINTK=y
+CONFIG_BUG=y
+
+# ============================================
+
+# ============================================
+CONFIG_FB=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_DUMMY_CONSOLE=y
+
+# ============================================
+
+# ============================================
+
+CONFIG_CONSOLE_TRANSLATIONS=y
+CONFIG_FONT_SUPPORT=y
+CONFIG_FONTS=y
+CONFIG_FONT_8x16=y
+
+# ============================================
+
+# ============================================
+CONFIG_PARAVIRT=y
+CONFIG_HYPERVISOR_GUEST=y
+CONFIG_KVM_GUEST=y
 
 EOF
         
@@ -405,9 +547,12 @@ build_poyo() {
     CFLAGS="-Wall -Wextra -O2 -D_GNU_SOURCE -fstack-protector-strong"
     LIBS="-lcrypt"
     
+    local PAM_ENABLED=false
+    
     if [[ "$USE_PAM" == "true" ]] && [[ -f /usr/include/security/pam_appl.h ]]; then
         CFLAGS="$CFLAGS -DUSE_PAM"
         LIBS="$LIBS -lpam -lpam_misc"
+        PAM_ENABLED=true
         print_info "Enabling PAM support"
     fi
     
@@ -417,6 +562,99 @@ build_poyo() {
     }
     
     print_success "Poyo built"
+    
+    # If PAM is enabled, set up PAM configuration in build directory
+    if [[ "$PAM_ENABLED" == "true" ]]; then
+        print_info "Setting up PAM configuration..."
+        
+        # Create PAM directories in build root
+        mkdir -p "$TARGET_ROOT/etc/pam.d"
+        mkdir -p "$TARGET_ROOT/usr/lib/security"
+        
+        # Create PAM configuration for login
+        cat > "$TARGET_ROOT/etc/pam.d/login" << 'EOFPAM'
+#%PAM-1.0
+# PAM configuration for Poyo login
+
+# Authentication
+auth       required     pam_env.so
+auth       sufficient   pam_unix.so nullok try_first_pass
+auth       required     pam_deny.so
+
+# Account management  
+account    required     pam_unix.so
+account    required     pam_permit.so
+
+# Password management
+password   required     pam_unix.so nullok sha512
+password   required     pam_permit.so
+
+# Session management
+session    required     pam_unix.so
+session    optional     pam_lastlog.so
+session    required     pam_env.so
+EOFPAM
+        
+        # Create symlinks
+        ln -sf login "$TARGET_ROOT/etc/pam.d/poyo"
+        ln -sf login "$TARGET_ROOT/etc/pam.d/system-auth"
+        
+        # Create other required configs
+        cat > "$TARGET_ROOT/etc/pam.d/other" << 'EOFOTHER'
+#%PAM-1.0
+auth       required     pam_deny.so
+account    required     pam_deny.so
+password   required     pam_deny.so
+session    required     pam_deny.so
+EOFOTHER
+        
+        cat > "$TARGET_ROOT/etc/pam.conf" << 'EOFCONF'
+# PAM configuration file
+EOFCONF
+        
+        cat > "$TARGET_ROOT/etc/environment" << 'EOFENV'
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EOFENV
+        
+        print_success "PAM configuration created"
+        
+        # Copy 64-bit PAM modules from host (Arch Linux)
+        print_info "Copying 64-bit PAM modules..."
+        
+        local PAM_SOURCE="/usr/lib/security"
+        local MODULE_COUNT=0
+        
+        if [[ -d "$PAM_SOURCE" ]]; then
+            for module in "$PAM_SOURCE"/pam_*.so; do
+                if [[ -f "$module" ]]; then
+                    # Only copy 64-bit modules
+                    if file "$module" | grep -q "64-bit"; then
+                        cp "$module" "$TARGET_ROOT/usr/lib/security/"
+                        MODULE_COUNT=$((MODULE_COUNT + 1))
+                    fi
+                fi
+            done
+            print_success "Copied $MODULE_COUNT PAM modules (64-bit only)"
+        else
+            print_warning "PAM modules not found at $PAM_SOURCE"
+        fi
+        
+        # Copy 64-bit PAM libraries
+        print_info "Copying 64-bit PAM libraries..."
+        
+        for lib_pattern in "libpam.so*" "libpam_misc.so*"; do
+            for lib in /usr/lib/$lib_pattern; do
+                if [[ -f "$lib" ]] && file "$lib" | grep -q "64-bit"; then
+                    cp "$lib" "$TARGET_ROOT/usr/lib/"
+                fi
+            done
+        done
+        
+        print_success "PAM libraries copied (64-bit only)"
+        
+        print_info "PAM support fully configured"
+    fi
+    
     COMPLETED_STEPS[poyo]=1
     cd ..
 }
@@ -615,6 +853,100 @@ Welcome to Galactica Linux!
 Default login: root / galactica
 EOF
     
+    # PAM Configuration (if Poyo was built with PAM)
+    if [[ "$USE_PAM" == "true" ]] && [[ -f /usr/include/security/pam_appl.h ]]; then
+        print_info "Setting up PAM configuration..."
+        
+        # Create PAM directories
+        mkdir -p "$TARGET_ROOT/etc/pam.d"
+        mkdir -p "$TARGET_ROOT/usr/lib/security"
+        
+        # Create PAM configuration for login
+        cat > "$TARGET_ROOT/etc/pam.d/login" << 'EOFPAM'
+#%PAM-1.0
+# PAM configuration for Poyo login
+
+# Authentication
+auth       required     pam_env.so
+auth       sufficient   pam_unix.so nullok try_first_pass
+auth       required     pam_deny.so
+
+# Account management  
+account    required     pam_unix.so
+account    required     pam_permit.so
+
+# Password management
+password   required     pam_unix.so nullok sha512
+password   required     pam_permit.so
+
+# Session management
+session    required     pam_unix.so
+session    optional     pam_lastlog.so
+session    required     pam_env.so
+EOFPAM
+        
+        # Create symlinks for other PAM services
+        ln -sf login "$TARGET_ROOT/etc/pam.d/poyo"
+        ln -sf login "$TARGET_ROOT/etc/pam.d/system-auth"
+        
+        # Create other required PAM configs
+        cat > "$TARGET_ROOT/etc/pam.d/other" << 'EOFOTHER'
+#%PAM-1.0
+auth       required     pam_deny.so
+account    required     pam_deny.so
+password   required     pam_deny.so
+session    required     pam_deny.so
+EOFOTHER
+        
+        cat > "$TARGET_ROOT/etc/pam.conf" << 'EOFCONF'
+# PAM configuration file
+EOFCONF
+        
+        cat > "$TARGET_ROOT/etc/environment" << 'EOFENV'
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EOFENV
+        
+        print_info "Copying 64-bit PAM modules..."
+        
+        # Copy 64-bit PAM modules from host (Arch Linux location)
+        local PAM_SOURCE="/usr/lib/security"
+        local MODULE_COUNT=0
+        
+        if [[ -d "$PAM_SOURCE" ]]; then
+            for module in "$PAM_SOURCE"/pam_*.so; do
+                if [[ -f "$module" ]]; then
+                    # Only copy 64-bit modules
+                    if file "$module" | grep -q "64-bit"; then
+                        cp "$module" "$TARGET_ROOT/usr/lib/security/"
+                        MODULE_COUNT=$((MODULE_COUNT + 1))
+                    fi
+                fi
+            done
+            print_info "Copied $MODULE_COUNT PAM modules (64-bit only)"
+        else
+            print_warning "PAM modules not found at $PAM_SOURCE"
+        fi
+        
+        print_info "Copying 64-bit PAM libraries..."
+        
+        # Copy 64-bit PAM libraries
+        local LIB_COUNT=0
+        for lib_pattern in "libpam.so*" "libpam_misc.so*"; do
+            for lib in /usr/lib/$lib_pattern; do
+                if [[ -f "$lib" ]]; then
+                    # Only copy 64-bit libraries
+                    if file "$lib" | grep -q "64-bit"; then
+                        cp "$lib" "$TARGET_ROOT/usr/lib/"
+                        LIB_COUNT=$((LIB_COUNT + 1))
+                    fi
+                fi
+            done
+        done
+        print_info "Copied $LIB_COUNT PAM libraries (64-bit only)"
+        
+        print_success "PAM support fully configured"
+    fi
+    
     print_success "System files created"
     COMPLETED_STEPS[sysfiles]=1
 }
@@ -642,12 +974,95 @@ create_launch_scripts() {
     
     cat > run-galactica.sh << 'EOFSCRIPT'
 #!/bin/bash
-qemu-system-x86_64 \
-    -kernel galactica-build/boot/vmlinuz-galactica \
-    -drive file=galactica-rootfs.img,format=raw,if=virtio \
-    -m 512M -smp 2 \
-    -append "root=/dev/vda rw console=ttyS0 init=/sbin/init" \
-    -nographic -serial mon:stdio
+# Enhanced Galactica launcher with debug modes
+
+KERNEL="galactica-build/boot/vmlinuz-galactica"
+ROOTFS="galactica-rootfs.img"
+
+if [[ ! -f "$KERNEL" ]] || [[ ! -f "$ROOTFS" ]]; then
+    echo "Error: Kernel or rootfs not found!"
+    echo "Kernel: $KERNEL"
+    echo "Rootfs: $ROOTFS"
+    exit 1
+fi
+
+echo "=== Galactica Boot Menu ==="
+echo ""
+echo "Choose boot mode:"
+echo ""
+echo "  1) Normal boot (AirRide init)"
+echo "  2) Debug boot (verbose kernel output)"
+echo "  3) Emergency shell (bypass AirRide)"
+echo "  4) Single user mode (skip services)"
+echo "  5) Init debug (show what init does)"
+echo ""
+read -p "Select mode (1-5) [1]: " mode
+mode=${mode:-1}
+
+# Base QEMU command
+QEMU_CMD="qemu-system-x86_64 \
+    -kernel $KERNEL \
+    -drive file=$ROOTFS,format=raw,if=virtio \
+    -m 512M \
+    -smp 2 \
+    -nographic \
+    -serial mon:stdio"
+
+case $mode in
+    1)
+        echo ""
+        echo "Starting normal boot..."
+        echo "Press Ctrl+A then X to exit"
+        echo ""
+        $QEMU_CMD \
+            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init"
+        ;;
+    
+    2)
+        echo ""
+        echo "Starting debug boot with verbose output..."
+        echo "Watch for errors in the kernel messages"
+        echo "Press Ctrl+A then X to exit"
+        echo ""
+        $QEMU_CMD \
+            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init debug loglevel=7 earlyprintk=serial"
+        ;;
+    
+    3)
+        echo ""
+        echo "Starting emergency shell..."
+        echo "This bypasses AirRide and gives you /bin/sh"
+        echo "Press Ctrl+A then X to exit"
+        echo ""
+        $QEMU_CMD \
+            -append "root=/dev/vda rw console=ttyS0 init=/bin/sh"
+        ;;
+    
+    4)
+        echo ""
+        echo "Starting single user mode..."
+        echo "This starts AirRide but may skip services"
+        echo "Press Ctrl+A then X to exit"
+        echo ""
+        $QEMU_CMD \
+            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init single"
+        ;;
+    
+    5)
+        echo ""
+        echo "Starting with init debugging..."
+        echo "This shows what the init system is doing"
+        echo "Press Ctrl+A then X to exit"
+        echo ""
+        $QEMU_CMD \
+            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init debug loglevel=7"
+        ;;
+    
+    *)
+        echo "Invalid selection"
+        exit 1
+        ;;
+esac
 EOFSCRIPT
     chmod +x run-galactica.sh
     
