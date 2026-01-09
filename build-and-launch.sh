@@ -17,7 +17,7 @@ AIRRIDE_DIR="./AirRide"
 DREAMLAND_DIR="./Dreamland"
 POYO_DIR="./Poyo"
 OUTPUT_ROOTFS="galactica-rootfs.img"
-ROOTFS_SIZE=1024
+ROOTFS_SIZE=4096
 KERNEL_VERSION="6.18.4"
 USE_PAM=false
 
@@ -331,11 +331,20 @@ build_airridectl() {
 }
 
 build_dreamland() {
-    print_step 5 11 "Build Dreamland Package Manager"
+    print_step 5 11 "Build Dreamland Hybrid Package Manager"
     cd "$DREAMLAND_DIR"
     mkdir -p build
-    g++ -o build/dreamland src/main.cpp -Wall -Wextra -O2 -std=c++17 -lcurl -lssl -lcrypto -lz -lzstd || return 1
-    print_success "Dreamland built"
+    
+    # Check for libarchive
+    if ! pkg-config --exists libarchive 2>/dev/null; then
+        print_warning "libarchive not found, trying anyway..."
+    fi
+    
+    g++ -o build/dreamland src/main.cpp \
+        -std=c++17 -O2 -Wall -Wextra \
+        -lcurl -lssl -lcrypto -lz -lzstd -larchive -lpthread || return 1
+    
+    print_success "Dreamland (hybrid) built"
     cd ..
 }
 
@@ -370,7 +379,7 @@ install_components() {
 }
 
 install_essentials() {
-    print_step 8 11 "Install Busybox and Libraries"
+    print_step 8 11 "Install Busybox, Libraries, and Build Tools"
     
     cp /bin/busybox "$TARGET_ROOT/bin/" && chmod +x "$TARGET_ROOT/bin/busybox"
     
@@ -429,7 +438,134 @@ install_essentials() {
         cp /etc/pki/tls/certs/ca-bundle.crt "$TARGET_ROOT/etc/ssl/certs/ca-certificates.crt"
     else
         curl -sL -o "$TARGET_ROOT/etc/ssl/certs/ca-certificates.crt" "https://curl.se/ca/cacert.pem" 2>/dev/null || \
-        wget -qO "$TARGET_ROOT/etc/ssl/certs/ca-certificates.crt" "https://curl.se/ca/cacert.pem" 2>/dev/null || true
+        wget -qO "$TARGET_ROOT/etc/ssl/certs/ca-certificates.awddadsasd
+	crt" "https://curl.se/ca/cacert.pem" 2>/dev/null || true
+    fi
+    
+    # ============================================
+    # BOOTSTRAP BUILD TOOLCHAIN
+    # ============================================
+    print_info "Installing build toolchain (gcc, g++, make, cmake)..."
+    
+    # Copy GCC toolchain from host
+    if command -v gcc &>/dev/null; then
+        mkdir -p "$TARGET_ROOT/usr/bin"
+        
+        # Copy compilers
+        for tool in gcc g++ cc c++ cpp as ld ar ranlib nm objdump objcopy strip; do
+            TOOL_PATH=$(command -v $tool 2>/dev/null)
+            if [[ -n "$TOOL_PATH" ]]; then
+                cp "$TOOL_PATH" "$TARGET_ROOT/usr/bin/" 2>/dev/null || true
+                # Copy libraries for this tool
+                copy_libs "$TOOL_PATH"
+            fi
+        done
+        
+        # Copy make
+        if command -v make &>/dev/null; then
+            MAKE_PATH=$(command -v make)
+            cp "$MAKE_PATH" "$TARGET_ROOT/usr/bin/"
+            copy_libs "$MAKE_PATH"
+        fi
+        
+        # Copy cmake with its data files
+        if command -v cmake &>/dev/null; then
+            CMAKE_PATH=$(command -v cmake)
+            cp "$CMAKE_PATH" "$TARGET_ROOT/usr/bin/"
+            copy_libs "$CMAKE_PATH"
+            
+            # Copy CMake's data files (modules, templates, etc.)
+            CMAKE_VERSION=$(cmake --version 2>/dev/null | head -1 | grep -oP '\d+\.\d+' || echo "3")
+            for cmake_dir in /usr/share/cmake-${CMAKE_VERSION}* /usr/share/cmake; do
+                if [[ -d "$cmake_dir" ]]; then
+                    mkdir -p "$TARGET_ROOT/usr/share"
+                    BASENAME=$(basename "$cmake_dir")
+                    if [[ ! -d "$TARGET_ROOT/usr/share/$BASENAME" ]]; then
+                        cp -a "$cmake_dir" "$TARGET_ROOT/usr/share/" 2>/dev/null || true
+                        print_info "Copied CMake data from $cmake_dir"
+                    fi
+                fi
+            done
+            
+            # Create symlink if needed
+            if [[ ! -d "$TARGET_ROOT/usr/share/cmake" ]] && [[ -d "$TARGET_ROOT/usr/share/cmake-"* ]]; then
+                CMAKE_ACTUAL=$(ls -d "$TARGET_ROOT/usr/share/cmake-"* 2>/dev/null | head -1)
+                if [[ -n "$CMAKE_ACTUAL" ]]; then
+                    ln -sf "$(basename "$CMAKE_ACTUAL")" "$TARGET_ROOT/usr/share/cmake"
+                fi
+            fi
+        fi
+        
+        # Copy pkg-config (needed by many build systems)
+        if command -v pkg-config &>/dev/null; then
+            PKG_CONFIG_PATH=$(command -v pkg-config)
+            cp "$PKG_CONFIG_PATH" "$TARGET_ROOT/usr/bin/"
+            copy_libs "$PKG_CONFIG_PATH"
+            
+            # Copy pkg-config data files
+            for pc_dir in /usr/share/pkgconfig /usr/lib/pkgconfig /usr/lib64/pkgconfig /usr/local/lib/pkgconfig; do
+                if [[ -d "$pc_dir" ]]; then
+                    mkdir -p "$TARGET_ROOT$pc_dir"
+                    cp -a "$pc_dir"/* "$TARGET_ROOT$pc_dir/" 2>/dev/null || true
+                fi
+            done
+        fi
+        
+        # Copy other essential build tools
+        for tool in autoconf automake libtool m4 patch sed diff find xargs; do
+            TOOL_PATH=$(command -v $tool 2>/dev/null)
+            if [[ -n "$TOOL_PATH" ]]; then
+                cp "$TOOL_PATH" "$TARGET_ROOT/usr/bin/" 2>/dev/null || true
+                copy_libs "$TOOL_PATH"
+            fi
+        done
+        
+        # Copy GCC support files and libraries
+        GCC_VERSION=$(gcc -dumpversion 2>/dev/null | cut -d. -f1)
+        if [[ -n "$GCC_VERSION" ]]; then
+            # Copy GCC's internal libraries and specs
+            for gcc_libdir in /usr/lib/gcc /usr/lib64/gcc /usr/libexec/gcc; do
+                if [[ -d "$gcc_libdir" ]]; then
+                    mkdir -p "$TARGET_ROOT$gcc_libdir"
+                    cp -a "$gcc_libdir"/* "$TARGET_ROOT$gcc_libdir/" 2>/dev/null || true
+                fi
+            done
+            
+            # Copy ALL GCC-related libraries (including dependencies like libisl, libmpc, libmpfr, libgmp)
+            print_info "Copying GCC runtime and dependency libraries..."
+            for lib_pattern in libgcc_s.so* libstdc++.so* libgomp.so* libatomic.so* libitm.so* libquadmath.so* \
+                              libisl.so* libmpc.so* libmpfr.so* libgmp.so* libz.so* libzstd.so*; do
+                find /lib* /usr/lib* -name "$lib_pattern" 2>/dev/null | while read LIBPATH; do
+                    if [[ -f "$LIBPATH" && ! -f "$TARGET_ROOT$LIBPATH" ]]; then
+                        mkdir -p "$TARGET_ROOT$(dirname $LIBPATH)"
+                        cp -L "$LIBPATH" "$TARGET_ROOT$LIBPATH" 2>/dev/null || true
+                    fi
+                done
+            done
+        fi
+        
+        # Copy system headers (needed for compilation)
+        if [[ -d /usr/include ]]; then
+            mkdir -p "$TARGET_ROOT/usr/include"
+            print_info "Copying system headers (this may take a moment)..."
+            # Copy all headers for proper compilation support
+            cp -a /usr/include/* "$TARGET_ROOT/usr/include/" 2>/dev/null || true
+        fi
+        
+        # Copy binutils
+        if [[ -d /usr/bin ]]; then
+            for tool in ld.bfd ld.gold gold; do
+                if [[ -f "/usr/bin/$tool" ]]; then
+                    cp "/usr/bin/$tool" "$TARGET_ROOT/usr/bin/" 2>/dev/null || true
+                    copy_libs "/usr/bin/$tool"
+                fi
+            done
+        fi
+        
+        print_success "Build toolchain installed"
+    else
+        print_warning "gcc not found on host - skipping toolchain installation"
+        print_warning "You won't be able to compile packages in the VM"
     fi
     
     print_success "Essentials installed"

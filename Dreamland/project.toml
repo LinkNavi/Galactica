@@ -1,5 +1,5 @@
-name = "Dreamland"
-version = "0.1.0"
+name = "DreamlandBinary"
+version = "2.0.0"
 type = "exec"
 language = "cpp"
 authors = []
@@ -13,7 +13,7 @@ dirs = ["include"]
 [build]
 flags = []
 optimization = "2"
-libs = ["curl", "ssl", "crypto", "z", "zstd", "gssapi_krb5", "pthread", "dl"]
+libs = ["curl", "ssl", "crypto", "z", "zstd", "archive", "pthread", "dl"]
 
 [deps]
 
@@ -33,13 +33,7 @@ lto = true
 strip = true
 flags = ["-Wall", "-Wextra", "-O3", "-DNDEBUG"]
 
-[features]
-# Define your features here
-# example = ["dep:some-package"]
-
 [scripts]
 # Custom build scripts
 # prebuild = "echo 'Starting build'"
 # postbuild = "echo 'Build complete'"
-
-
