@@ -66,30 +66,69 @@ class Dreamland {
     std::map<std::string, Package> packages, installed;
     std::set<std::string> galactica_pkgs;
     std::map<std::string, LoadedModule> modules;
-
+std::vector<std::string> module_search_paths;
     std::string home() { const char* h = getenv("HOME"); return h ? h : "/tmp"; }
 
-    void init() {
-        std::string h = home();
-        const char* xc = getenv("XDG_CACHE_HOME");
-        const char* xd = getenv("XDG_DATA_HOME");
-        std::string bc = xc ? xc : h + "/.cache";
-        std::string bd = xd ? xd : h + "/.local/share";
-        cache_dir = bc + "/dreamland";
-        build_dir = cache_dir + "/build";
-        pkg_index = cache_dir + "/package_index.txt";
-        pkg_cache_dir = cache_dir + "/packages";
-        db_cache_dir = cache_dir + "/db";
-        installed_db = bd + "/dreamland/installed.db";
-        pkg_db = bd + "/dreamland/packages.db";
-        manifest_dir = bd + "/dreamland/manifests";
-        modules_dir = bd + "/dreamland/modules";
-        debug = getenv("DREAMLAND_DEBUG") && std::string(getenv("DREAMLAND_DEBUG")) == "1";
-        fs::create_directories(cache_dir); fs::create_directories(build_dir);
-        fs::create_directories(pkg_cache_dir); fs::create_directories(db_cache_dir);
-        fs::create_directories(fs::path(installed_db).parent_path());
-        fs::create_directories(manifest_dir); fs::create_directories(modules_dir);
+ void init() {
+    std::string h = home();
+    const char* xc = getenv("XDG_CACHE_HOME");
+    const char* xd = getenv("XDG_DATA_HOME");
+    std::string bc = xc ? xc : h + "/.cache";
+    std::string bd = xd ? xd : h + "/.local/share";
+    
+    cache_dir = bc + "/dreamland";
+    build_dir = cache_dir + "/build";
+    pkg_index = cache_dir + "/package_index.txt";
+    pkg_cache_dir = cache_dir + "/packages";
+    db_cache_dir = cache_dir + "/db";
+    
+    installed_db = bd + "/dreamland/installed.db";
+    pkg_db = bd + "/dreamland/packages.db";
+    manifest_dir = bd + "/dreamland/manifests";
+    
+    // Search paths for modules (system first, then user)
+    module_search_paths = {
+        "/usr/local/share/dreamland/modules",
+        bd + "/dreamland/modules"
+    };
+    
+    // Use first writable directory for installs
+    for (auto& path : module_search_paths) {
+        if (fs::exists(path) && access(path.c_str(), W_OK) == 0) {
+            modules_dir = path;
+            break;
+        }
     }
+    if (modules_dir.empty()) modules_dir = module_search_paths.back();
+    
+    debug = getenv("DREAMLAND_DEBUG") && std::string(getenv("DREAMLAND_DEBUG")) == "1";
+    
+    fs::create_directories(cache_dir); 
+    fs::create_directories(build_dir);
+    fs::create_directories(pkg_cache_dir); 
+    fs::create_directories(db_cache_dir);
+    fs::create_directories(fs::path(installed_db).parent_path());
+    fs::create_directories(manifest_dir);
+    
+    // Try to create modules directory
+    try {
+        fs::create_directories(modules_dir);
+    } catch (...) {}
+}
+
+void load_all_mods() {
+    for (auto& dir : module_search_paths) {
+        if (!fs::exists(dir)) continue;
+        for (auto& e : fs::directory_iterator(dir)) {
+            if (e.path().extension() == ".so") {
+                std::string name = e.path().stem().string();
+                // Skip if already loaded
+                if (modules.find(name) != modules.end()) continue;
+                load_mod(e.path().string());
+            }
+        }
+    }
+}
 
     void banner() { std::cout << PINK << "    ★ DREAMLAND ★\n    Package Manager + Modules\n" << RESET << "\n"; }
     void status(const std::string& m) { std::cout << BLUE << "[★] " << RESET << m << "\n"; }
@@ -156,11 +195,7 @@ class Dreamland {
         return true;
     }
 
-    void load_all_mods() {
-        if (!fs::exists(modules_dir)) return;
-        for (auto& e : fs::directory_iterator(modules_dir))
-            if (e.path().extension() == ".so") load_mod(e.path().string());
-    }
+    
 
     void unload_mods() {
         for (auto& [n, m] : modules) { if (m.cleanup) m.cleanup(); dlclose(m.handle); }

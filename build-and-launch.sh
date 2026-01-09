@@ -406,6 +406,23 @@ install_components() {
     ln -sf airride "$TARGET_ROOT/sbin/init"
     cp "$AIRRIDE_DIR/Ctl/build/airridectl" "$TARGET_ROOT/usr/bin/airridectl" && chmod 755 "$TARGET_ROOT/usr/bin/airridectl"
     cp "$DREAMLAND_DIR/build/dreamland" "$TARGET_ROOT/usr/bin/dreamland" && chmod 755 "$TARGET_ROOT/usr/bin/dreamland"
+
+print_info "Installing Dreamland modules..."
+mkdir -p "$TARGET_ROOT/usr/local/share/dreamland/modules"
+MODULE_COUNT=0
+for module in "$DREAMLAND_DIR/build"/*.so; do
+    if [[ -f "$module" ]]; then
+        cp "$module" "$TARGET_ROOT/usr/local/share/dreamland/modules/"
+        chmod 755 "$TARGET_ROOT/usr/local/share/dreamland/modules/$(basename $module)"
+        print_info "  • $(basename $module)"
+        MODULE_COUNT=$((MODULE_COUNT + 1))
+    fi
+done
+if [[ $MODULE_COUNT -gt 0 ]]; then
+    print_success "$MODULE_COUNT Dreamland module(s) installed"
+else
+    print_info "No Dreamland modules to install"
+fi
     ln -sf dreamland "$TARGET_ROOT/usr/bin/dl"
     
     print_success "Components installed"
