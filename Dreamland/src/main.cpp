@@ -91,6 +91,7 @@ private:
   std::string pkg_index;
   std::string pkg_cache_dir;
   std::string db_cache_dir;
+  std::string install_manifest_dir;
   bool debug_mode = false;
 
   std::map<std::string, Package> packages; // All packages
@@ -123,6 +124,7 @@ private:
 
     installed_db = base_data + "/dreamland/installed.db";
     pkg_db = base_data + "/dreamland/packages.db";
+    install_manifest_dir = base_data + "/dreamland/manifests";
 
     // Check for debug mode
     const char *debug_env = getenv("DREAMLAND_DEBUG");
@@ -137,6 +139,7 @@ private:
       fs::create_directories(db_cache_dir);
       fs::create_directories(fs::path(installed_db).parent_path());
       fs::create_directories(fs::path(pkg_db).parent_path());
+      fs::create_directories(install_manifest_dir);
     } catch (const fs::filesystem_error &e) {
       print_error("Failed to create directories: " + std::string(e.what()));
       throw;
@@ -686,6 +689,18 @@ private:
         if (op_pos != std::string::npos) {
           dep = dep.substr(0, op_pos);
         }
+        
+        // Skip .so library dependencies - these are provided by packages, not packages themselves
+        if (dep.find(".so") != std::string::npos) {
+          print_debug("  Skipping library dependency: " + dep);
+          continue;
+        }
+        
+        // Skip empty dependencies
+        if (dep.empty()) {
+          continue;
+        }
+        
         dependencies.push_back(dep);
         print_debug("  Dependency: " + dep);
       }
@@ -758,7 +773,8 @@ private:
   }
 
   bool extract_zst_package(const std::string &pkg_file,
-                           const std::string &dest) {
+                           const std::string &dest,
+                           std::vector<std::string> *installed_files = nullptr) {
     print_status("Extracting binary package...");
 
     struct archive *a;
@@ -802,6 +818,11 @@ private:
 
       r = archive_write_header(ext, entry);
       if (r == ARCHIVE_OK) {
+        // Track installed file
+        if (installed_files && archive_entry_filetype(entry) == AE_IFREG) {
+          installed_files->push_back("/" + pathname);
+        }
+
         const void *buff;
         size_t size;
         int64_t offset;
@@ -1159,9 +1180,22 @@ private:
       print_success("Using cached package");
     }
 
-    if (!extract_zst_package(cached_pkg, "")) {
+    // Track installed files for uninstall
+    std::vector<std::string> installed_files;
+    if (!extract_zst_package(cached_pkg, "", &installed_files)) {
       print_error("Failed to extract package");
       return false;
+    }
+
+    // Save manifest for uninstall
+    std::string manifest_file = install_manifest_dir + "/" + pkg.name + ".manifest";
+    std::ofstream manifest(manifest_file);
+    if (manifest.is_open()) {
+      for (const auto &file : installed_files) {
+        manifest << file << "\n";
+      }
+      manifest.close();
+      print_debug("Saved manifest with " + std::to_string(installed_files.size()) + " files");
     }
 
     Package installed_pkg = pkg;
@@ -1215,6 +1249,7 @@ private:
   std::vector<std::string> resolve_dependencies(const std::string &pkg_name) {
     std::map<std::string, std::vector<std::string>> dep_graph;
     std::set<std::string> all_packages;
+    std::set<std::string> missing_packages;
 
     // Build complete dependency graph using BFS
     std::queue<std::string> to_process;
@@ -1240,13 +1275,16 @@ private:
 
       if (it == packages.end()) {
         print_debug("Dependency not found, skipping: " + current);
+        missing_packages.insert(current);
         continue;
       }
 
       // Resolve dependencies from .PKGINFO if it's an Arch package
       if (it->second.source == PackageSource::ARCH_BINARY && 
           !it->second.deps_resolved) {
-        resolve_arch_package_deps(current);
+        if (!resolve_arch_package_deps(current)) {
+          print_debug("Failed to resolve deps for: " + current);
+        }
         it = packages.find(current); // Refresh iterator
       }
 
@@ -1267,6 +1305,15 @@ private:
       dep_graph[current] = deps;
     }
 
+    // Warn about missing packages
+    if (!missing_packages.empty()) {
+      print_warning("Some dependencies could not be found (may be provided by system):");
+      for (const auto &pkg : missing_packages) {
+        std::cout << "  • " << pkg << "\n";
+      }
+      std::cout << "\n";
+    }
+
     // Topological sort using DFS
     std::vector<std::string> result;
     std::set<std::string> visited;
@@ -1285,6 +1332,10 @@ private:
 
       if (dep_graph.count(node)) {
         for (const auto &dep : dep_graph[node]) {
+          // Skip missing packages in dependency tree
+          if (missing_packages.count(dep)) {
+            continue;
+          }
           if (!visit(dep))
             return false;
         }
@@ -1298,6 +1349,9 @@ private:
 
     // Visit all packages
     for (const auto &pkg : all_packages) {
+      if (missing_packages.count(pkg)) {
+        continue; // Skip missing packages
+      }
       if (!visit(pkg))
         return {};
     }
@@ -1528,8 +1582,9 @@ public:
     }
 
     if (installed.find(pkg_name) != installed.end()) {
-      print_warning(pkg_name + " is already installed...installing anyways "
-                               "(there is no uninstall command yet)");
+      print_warning(pkg_name + " is already installed");
+      std::cout << "Use 'dreamland uninstall " << pkg_name << "' first to reinstall\n";
+      return false;
     }
 
     Package *pkg_ptr = nullptr;
@@ -1778,6 +1833,150 @@ public:
     }
   }
 
+  void uninstall_package(const std::string &pkg_name) {
+    load_installed();
+
+    if (installed.find(pkg_name) == installed.end()) {
+      print_error(pkg_name + " is not installed");
+      return;
+    }
+
+    print_banner();
+    const auto &pkg = installed[pkg_name];
+    
+    std::cout << "Uninstalling: " << PINK << pkg.name << RESET << " "
+              << pkg.version;
+    
+    if (pkg.source == PackageSource::GALACTICA) {
+      std::cout << CYAN " [source]" RESET << "\n\n";
+    } else {
+      std::cout << YELLOW " [binary]" RESET << "\n\n";
+    }
+
+    // Check for manifest
+    std::string manifest_file = install_manifest_dir + "/" + pkg_name + ".manifest";
+    
+    if (!fs::exists(manifest_file)) {
+      print_warning("No installation manifest found for " + pkg_name);
+      std::cout << "\nThis package was installed without file tracking.\n";
+      std::cout << "Cannot safely remove files automatically.\n\n";
+      
+      std::cout << "Options:\n";
+      std::cout << "1. Remove from database only (keep files)\n";
+      std::cout << "2. Cancel\n\n";
+      std::cout << "Choice (1/2) [2]: ";
+      
+      std::string choice;
+      std::getline(std::cin, choice);
+      
+      if (choice == "1") {
+        installed.erase(pkg_name);
+        save_installed();
+        print_success("Removed " + pkg_name + " from database (files not touched)");
+      } else {
+        print_warning("Uninstall cancelled");
+      }
+      return;
+    }
+
+    // Read manifest
+    std::vector<std::string> files_to_remove;
+    std::ifstream manifest(manifest_file);
+    std::string line;
+    
+    while (std::getline(manifest, line)) {
+      if (!line.empty()) {
+        files_to_remove.push_back(line);
+      }
+    }
+    manifest.close();
+
+    if (files_to_remove.empty()) {
+      print_warning("Manifest is empty");
+    } else {
+      std::cout << "Files to remove: " << files_to_remove.size() << "\n\n";
+      
+      // Show first few files
+      int show_count = std::min(10, (int)files_to_remove.size());
+      for (int i = 0; i < show_count; i++) {
+        std::cout << "  " << files_to_remove[i] << "\n";
+      }
+      
+      if (files_to_remove.size() > show_count) {
+        std::cout << "  ... and " << (files_to_remove.size() - show_count) 
+                  << " more files\n";
+      }
+    }
+
+    std::cout << "\nContinue with uninstall? (y/n) [n]: ";
+    std::string confirm;
+    std::getline(std::cin, confirm);
+
+    if (confirm != "y" && confirm != "Y") {
+      print_warning("Uninstall cancelled");
+      return;
+    }
+
+    // Remove files
+    int removed_count = 0;
+    int failed_count = 0;
+    
+    print_status("Removing files...");
+    
+    // Sort in reverse to remove files before directories
+    std::sort(files_to_remove.rbegin(), files_to_remove.rend());
+    
+    for (const auto &file : files_to_remove) {
+      try {
+        if (fs::exists(file)) {
+          fs::remove(file);
+          removed_count++;
+          print_debug("Removed: " + file);
+        }
+      } catch (const fs::filesystem_error &e) {
+        failed_count++;
+        print_debug("Failed to remove: " + file + " - " + e.what());
+      }
+    }
+
+    // Try to remove empty directories
+    std::set<std::string> dirs;
+    for (const auto &file : files_to_remove) {
+      fs::path p(file);
+      if (p.has_parent_path()) {
+        dirs.insert(p.parent_path().string());
+      }
+    }
+    
+    for (auto it = dirs.rbegin(); it != dirs.rend(); ++it) {
+      try {
+        if (fs::exists(*it) && fs::is_empty(*it)) {
+          fs::remove(*it);
+          print_debug("Removed empty dir: " + *it);
+        }
+      } catch (...) {
+        // Ignore errors when removing directories
+      }
+    }
+
+    // Remove from database
+    installed.erase(pkg_name);
+    save_installed();
+
+    // Remove manifest
+    fs::remove(manifest_file);
+
+    std::cout << "\n";
+    if (failed_count == 0) {
+      print_success("Successfully uninstalled " + pkg_name);
+      std::cout << "  Removed " << removed_count << " files\n";
+    } else {
+      print_warning("Uninstalled " + pkg_name + " with some errors");
+      std::cout << "  Removed: " << removed_count << " files\n";
+      std::cout << "  Failed: " << failed_count << " files\n";
+    }
+  }
+
   void show_deps(const std::string &pkg_name, bool recursive = false) {
     if (packages.empty() && galactica_packages.empty()) {
       print_status("Loading package database...");
@@ -1983,6 +2182,7 @@ public:
     std::cout << "Commands:\n";
     std::cout << "  sync                     Sync package databases\n";
     std::cout << "  install [opts] <package> Install a package\n";
+    std::cout << "  uninstall <package>      Uninstall a package\n";
     std::cout << "  search <query>           Search for packages\n";
     std::cout << "  deps <package> [opts]    Show package dependencies\n";
     std::cout << "  list                     List installed packages\n";
@@ -2004,6 +2204,7 @@ public:
               << " install --arch vim   # Forces Arch binary (faster)\n";
     std::cout << "  " << prog
               << " install htop         # From Arch (not in Galactica)\n";
+    std::cout << "  " << prog << " uninstall vim\n";
     std::cout << "\nPhilosophy:\n";
     std::cout << "  " << CYAN << "• Source-first:" << RESET
               << " Build from Galactica by default\n";
@@ -2011,6 +2212,8 @@ public:
               << " Use --arch for speed/convenience\n";
     std::cout << "  " << CYAN << "• .PKGINFO deps:" << RESET
               << " Accurate dependencies from package files\n";
+    std::cout << "  " << GREEN << "• File tracking:" << RESET
+              << " Safe uninstall with manifests\n";
     std::cout << "  • Full control over your system\n";
     std::cout << "  • Transparency and reproducibility\n";
     std::cout << "\nConfiguration:\n";
@@ -2018,6 +2221,7 @@ public:
     std::cout << "  Cache:      " << cache_dir << "\n";
     std::cout << "  Data:       "
               << fs::path(installed_db).parent_path().string() << "\n";
+    std::cout << "  Manifests:  " << install_manifest_dir << "\n";
     std::cout << "\nDebug Mode:\n";
     std::cout << "  export DREAMLAND_DEBUG=1\n";
   }
@@ -2078,6 +2282,8 @@ int main(int argc, char *argv[]) {
       }
 
       return dl.install_package(pkg_name, force_arch) ? 0 : 1;
+    } else if (command == "uninstall" && argc >= 3) {
+      dl.uninstall_package(argv[2]);
     } else if (command == "list") {
       dl.list_installed();
     } else if (command == "clean") {
