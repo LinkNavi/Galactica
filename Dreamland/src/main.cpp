@@ -85,10 +85,9 @@ private:
     std::string pkg_cache_dir;
     std::string db_cache_dir;
     
-    std::map<std::string, Package> packages;          // Arch packages (loaded at sync)
+    std::map<std::string, Package> packages;          // All packages
     std::map<std::string, Package> installed;
     std::set<std::string> galactica_packages;         // List of available Galactica packages
-    std::set<std::string> available_packages;         // For compatibility
     std::set<std::string> installing;
 
     std::string get_home_dir() {
@@ -126,74 +125,75 @@ private:
             throw;
         }
     }
-void save_package_db() {
-    std::ofstream file(pkg_db);
-    if (!file.is_open()) {
-        print_warning("Could not save package database");
-        return;
-    }
-    
-    // Save Arch packages
-    for (const auto& [name, pkg] : packages) {
-        if (pkg.source == PackageSource::ARCH_BINARY) {
-            file << "ARCH|" << pkg.name << "|" << pkg.version << "|" 
-                 << pkg.repo << "|" << pkg.filename << "|" 
-                 << pkg.size << "|" << pkg.description << "\n";
-        }
-    }
-    
-    file.close();
-    print_debug("Saved package database");
-}
 
-void load_package_db() {
-    std::ifstream file(pkg_db);
-    if (!file.is_open()) {
-        print_debug("No cached package database found");
-        return;
-    }
-    
-    std::string line;
-    int count = 0;
-    
-    while (std::getline(file, line)) {
-        std::istringstream iss(line);
-        std::string type, name, version, repo, filename, size_str, desc;
-        
-        if (!std::getline(iss, type, '|')) continue;
-        if (!std::getline(iss, name, '|')) continue;
-        if (!std::getline(iss, version, '|')) continue;
-        if (!std::getline(iss, repo, '|')) continue;
-        if (!std::getline(iss, filename, '|')) continue;
-        if (!std::getline(iss, size_str, '|')) continue;
-        std::getline(iss, desc);
-        
-        if (type == "ARCH") {
-            Package pkg;
-            pkg.name = name;
-            pkg.version = version;
-            pkg.repo = repo;
-            pkg.filename = filename;
-            try {
-                pkg.size = std::stoull(size_str);
-            } catch (...) {
-                pkg.size = 0;
-            }
-            pkg.description = desc;
-            pkg.source = PackageSource::ARCH_BINARY;
-            packages[name] = pkg;
-            count++;
+    void save_package_db() {
+        std::ofstream file(pkg_db);
+        if (!file.is_open()) {
+            print_warning("Could not save package database");
+            return;
         }
+        
+        for (const auto& [name, pkg] : packages) {
+            if (pkg.source == PackageSource::ARCH_BINARY) {
+                file << "ARCH|" << pkg.name << "|" << pkg.version << "|" 
+                     << pkg.repo << "|" << pkg.filename << "|" 
+                     << pkg.size << "|" << pkg.description << "\n";
+            }
+        }
+        
+        file.close();
+        print_debug("Saved package database");
     }
-    
-    file.close();
-    print_debug("Loaded " + std::to_string(count) + " packages from cache");
-}
+
+    void load_package_db() {
+        std::ifstream file(pkg_db);
+        if (!file.is_open()) {
+            print_debug("No cached package database found");
+            return;
+        }
+        
+        std::string line;
+        int count = 0;
+        
+        while (std::getline(file, line)) {
+            std::istringstream iss(line);
+            std::string type, name, version, repo, filename, size_str, desc;
+            
+            if (!std::getline(iss, type, '|')) continue;
+            if (!std::getline(iss, name, '|')) continue;
+            if (!std::getline(iss, version, '|')) continue;
+            if (!std::getline(iss, repo, '|')) continue;
+            if (!std::getline(iss, filename, '|')) continue;
+            if (!std::getline(iss, size_str, '|')) continue;
+            std::getline(iss, desc);
+            
+            if (type == "ARCH") {
+                Package pkg;
+                pkg.name = name;
+                pkg.version = version;
+                pkg.repo = repo;
+                pkg.filename = filename;
+                try {
+                    pkg.size = std::stoull(size_str);
+                } catch (...) {
+                    pkg.size = 0;
+                }
+                pkg.description = desc;
+                pkg.source = PackageSource::ARCH_BINARY;
+                packages[name] = pkg;
+                count++;
+            }
+        }
+        
+        file.close();
+        print_debug("Loaded " + std::to_string(count) + " packages from cache");
+    }
+
     void print_banner() {
         std::cout << PINK;
         std::cout << "    ★ ･ﾟ: *✧･ﾟ:* DREAMLAND *:･ﾟ✧*:･ﾟ★\n";
         std::cout << "      Galactica Package Manager\n";
-        std::cout << "     Your Repo + Arch Fallback\n";
+        std::cout << "      Source-First Philosophy\n";
         std::cout << RESET << "\n";
     }
 
@@ -226,7 +226,7 @@ void load_package_db() {
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &output);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Dreamland/2.0");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Dreamland/2.1");
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
@@ -260,7 +260,7 @@ void load_package_db() {
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Dreamland/2.0");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Dreamland/2.1");
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
@@ -286,9 +286,7 @@ void load_package_db() {
         return WEXITSTATUS(status);
     }
 
-    // ========================================
-    // GALACTICA REPOSITORY (Your Packages)
-    // ========================================
+    // GALACTICA REPOSITORY
     
     bool fetch_galactica_index() {
         print_status("Fetching Galactica package index...");
@@ -322,16 +320,6 @@ void load_package_db() {
 
         print_success("Found " + std::to_string(galactica_packages.size()) + " Galactica packages");
         return true;
-    }
-
-    bool download_galactica_package(const std::string& pkg_path) {
-        std::string pkg_url = GALACTICA_RAW_URL + pkg_path;
-        std::string local_path = cache_dir + "/" + pkg_path;
-        
-        fs::create_directories(fs::path(local_path).parent_path());
-        
-        return download_url(pkg_url, local_path) ? 
-               (std::ofstream(local_path) << local_path, true) : false;
     }
 
     bool parse_galactica_package(const std::string& filepath, Package& pkg) {
@@ -417,7 +405,6 @@ void load_package_db() {
         return "";
     }
 
-    // Load a Galactica package definition and add to packages map
     bool load_galactica_package(const std::string& pkg_name) {
         std::string pkg_path = find_galactica_package(pkg_name);
         if (pkg_path.empty()) {
@@ -427,7 +414,6 @@ void load_package_db() {
         std::string pkg_url = GALACTICA_RAW_URL + pkg_path;
         std::string local_path = cache_dir + "/" + pkg_path;
         
-        // Download if not cached
         if (!fs::exists(local_path)) {
             fs::create_directories(fs::path(local_path).parent_path());
             std::string content;
@@ -450,9 +436,7 @@ void load_package_db() {
         return false;
     }
 
-    // ========================================
-    // ARCH REPOSITORY (Dependencies)
-    // ========================================
+    // ARCH REPOSITORY
     
     bool parse_arch_db(const std::string& db_file, const std::string& repo) {
         print_status("Parsing Arch " + repo + " database...");
@@ -507,7 +491,7 @@ void load_package_db() {
             }
             
             if (!pkg.name.empty() && !pkg.version.empty()) {
-                // Only add if not already in Galactica repo
+                // Only add if not already in Galactica
                 if (packages.find(pkg.name) == packages.end()) {
                     packages[pkg.name] = pkg;
                     count++;
@@ -520,7 +504,7 @@ void load_package_db() {
     }
 
     bool sync_arch_databases() {
-        print_status("Syncing Arch Linux databases (for dependencies)...");
+        print_status("Syncing Arch Linux databases (for fallback)...");
         
         bool success = false;
         
@@ -737,7 +721,11 @@ void load_package_db() {
             for (const auto& tool : missing) {
                 std::cout << "  • " << RED << tool << RESET << "\n";
             }
-            std::cout << "\nInstall with: " << YELLOW << "dreamland install gcc make cmake" << RESET << "\n";
+            std::cout << "\nInstall with: " << YELLOW << "dreamland install --arch " << RESET;
+            for (const auto& tool : missing) {
+                std::cout << tool << " ";
+            }
+            std::cout << "\n";
             return false;
         }
         
@@ -826,14 +814,12 @@ void load_package_db() {
         }
     }
 
-    // ========================================
-    // UNIFIED INSTALLATION
-    // ========================================
+    // INSTALLATION
     
     bool install_from_galactica(const Package& pkg) {
         print_banner();
         std::cout << "Installing: " << PINK << pkg.name << RESET << " " << pkg.version << " " 
-                  << CYAN << "[from source]" << RESET << "\n";
+                  << CYAN << "[building from source]" << RESET << "\n";
         std::cout << pkg.description << "\n\n";
         
         std::string build_path = build_dir + "/" + pkg.name;
@@ -873,7 +859,7 @@ void load_package_db() {
     bool install_from_arch(const Package& pkg) {
         print_banner();
         std::cout << "Installing: " << PINK << pkg.name << RESET << " " << pkg.version << " " 
-                  << YELLOW << "[from Arch]" << RESET << "\n";
+                  << YELLOW << "[binary from Arch]" << RESET << "\n";
         std::cout << pkg.description << "\n\n";
 
         std::string cached_pkg = pkg_cache_dir + "/" + pkg.filename;
@@ -959,23 +945,17 @@ void load_package_db() {
             }
             if (installed.count(name)) return true;
             
-            // Try to find package:
-            // 1. Check if already loaded
             auto it = packages.find(name);
             
-            // 2. If not found, try loading from Galactica
             if (it == packages.end()) {
                 if (load_galactica_package(name)) {
                     it = packages.find(name);
                 }
             }
             
-            // 3. Still not found? Check if it's in Arch (already loaded during sync)
             if (it == packages.end()) {
-                // It should be in Arch database if it exists at all
-                // If not, it's truly missing
                 print_warning("Package not found: " + name);
-                return true; // Skip missing optional deps
+                return true;
             }
             
             temp_mark.insert(name);
@@ -1011,76 +991,71 @@ public:
         curl_global_cleanup();
     }
 
- void sync() {
-    print_banner();
-    print_status("Syncing repositories...");
-    std::cout << "Cache: " << cache_dir << "\n\n";
-    
-    // Sync Galactica (your packages)
-    if (!fetch_galactica_index()) {
-        print_error("Failed to sync Galactica repository");
-        return;
+    void sync() {
+        print_banner();
+        print_status("Syncing repositories...");
+        std::cout << "Cache: " << cache_dir << "\n\n";
+        
+        if (!fetch_galactica_index()) {
+            print_error("Failed to sync Galactica repository");
+            return;
+        }
+        
+        if (!sync_arch_databases()) {
+            print_error("Failed to sync Arch repositories");
+            return;
+        }
+        
+        save_package_db();
+        load_installed();
+        
+        int galactica_count = galactica_packages.size();
+        int arch_count = 0;
+        for (const auto& [name, pkg] : packages) {
+            if (pkg.source == PackageSource::ARCH_BINARY) arch_count++;
+        }
+        
+        print_success("Sync complete!");
+        std::cout << "  " << PINK << galactica_packages.size() << RESET << " Galactica packages (source-first)\n";
+        std::cout << "  " << YELLOW << arch_count << RESET << " Arch packages (binary fallback)\n";
+        std::cout << "\n";
+        std::cout << CYAN << "Philosophy:" << RESET << "\n";
+        std::cout << "  • Source builds by default (from Galactica)\n";
+        std::cout << "  • Binary fallback with --arch flag\n";
+        std::cout << "  • Full control over your system ✨\n";
     }
-    
-    // Sync Arch (for dependencies)
-    if (!sync_arch_databases()) {
-        print_error("Failed to sync Arch repositories");
-        return;
-    }
-    
-    // Save the package database
-    save_package_db();
-    
-    load_installed();
-    
-    int galactica_count = galactica_packages.size();
-    int arch_count = 0;
-    for (const auto& [name, pkg] : packages) {
-        if (pkg.source == PackageSource::ARCH_BINARY) arch_count++;
-    }
-    
-    print_success("Sync complete!");
-    std::cout << "  " << PINK << galactica_packages.size() << RESET << " Galactica packages (built from source)\n";
-    std::cout << "  " << YELLOW << arch_count << RESET << " Arch packages (binary, for fallback)\n";
-    std::cout << "\n";
-    std::cout << CYAN << "How it works:" << RESET << "\n";
-    std::cout << "  • Packages in Galactica repo → built from source\n";
-    std::cout << "  • Everything else → Arch binary (fast!)\n";
-    std::cout << "  • Best of both worlds ✨\n";
-}
 
     void search(const std::string& query) {
         if (packages.empty() && galactica_packages.empty()) {
-        print_status("Loading package database...");
-        load_package_db();
-        
-        // Also load Galactica index
-        std::ifstream index_file(pkg_index);
-        if (index_file.is_open()) {
-            std::string line;
-            while (std::getline(index_file, line)) {
-                line.erase(0, line.find_first_not_of(" \t\r\n"));
-                line.erase(line.find_last_not_of(" \t\r\n") + 1);
-                if (!line.empty() && line[0] != '#') {
-                    galactica_packages.insert(line);
+            print_status("Loading package database...");
+            load_package_db();
+            
+            std::ifstream index_file(pkg_index);
+            if (index_file.is_open()) {
+                std::string line;
+                while (std::getline(index_file, line)) {
+                    line.erase(0, line.find_first_not_of(" \t\r\n"));
+                    line.erase(line.find_last_not_of(" \t\r\n") + 1);
+                    if (!line.empty() && line[0] != '#') {
+                        galactica_packages.insert(line);
+                    }
                 }
             }
         }
-    }
-    
-    load_installed();
-    
-    if (galactica_packages.empty() && packages.empty()) {
-        print_warning("Package database is empty. Run 'dreamland sync' first.");
-        return;
-    }
+        
+        load_installed();
+        
+        if (galactica_packages.empty() && packages.empty()) {
+            print_warning("Package database is empty. Run 'dreamland sync' first.");
+            return;
+        }
         
         print_status("Searching for: " + query);
         std::cout << "\n";
         
         bool found = false;
         
-        // Search Galactica packages
+        // Search Galactica first
         for (const auto& pkg_path : galactica_packages) {
             size_t last_slash = pkg_path.find_last_of('/');
             std::string filename = (last_slash != std::string::npos) 
@@ -1093,7 +1068,6 @@ public:
                 : filename;
             
             if (name.find(query) != std::string::npos) {
-                // Load package to get description
                 if (load_galactica_package(name)) {
                     auto& pkg = packages[name];
                     
@@ -1101,18 +1075,17 @@ public:
                     std::string status = is_installed ? GREEN " [installed]" RESET : "";
                     
                     std::cout << PINK << name << RESET << " " << pkg.version << status 
-                              << CYAN " [galactica]" RESET << "\n";
+                              << CYAN " [source]" RESET << "\n";
                     std::cout << "  " << pkg.description << "\n";
                     found = true;
                 }
             }
         }
         
-        // Search Arch packages (only show if not in Galactica)
+        // Show Arch packages only if not in Galactica
         for (const auto& [name, pkg] : packages) {
             if (pkg.source != PackageSource::ARCH_BINARY) continue;
             
-            // Skip if we already showed it from Galactica
             if (find_galactica_package(name) != "") continue;
             
             if (name.find(query) != std::string::npos || 
@@ -1122,7 +1095,7 @@ public:
                 std::string status = is_installed ? GREEN " [installed]" RESET : "";
                 
                 std::cout << PINK << name << RESET << " " << pkg.version << status 
-                          << YELLOW " [arch]" RESET << "\n";
+                          << YELLOW " [fallback]" RESET << "\n";
                 std::cout << "  " << pkg.description << "\n";
                 found = true;
             }
@@ -1133,96 +1106,70 @@ public:
         }
     }
 
-    bool install_package(const std::string& pkg_name, bool force_arch = false, bool force_source = false) {
-       load_installed();
-    
-    // Load cached package database if packages are empty
-    if (packages.empty() && galactica_packages.empty()) {
-        print_status("Loading package database...");
-        load_package_db();
+    bool install_package(const std::string& pkg_name, bool force_arch = false) {
+        load_installed();
         
-        // Also load Galactica index
-        std::ifstream index_file(pkg_index);
-        if (index_file.is_open()) {
-            std::string line;
-            while (std::getline(index_file, line)) {
-                line.erase(0, line.find_first_not_of(" \t\r\n"));
-                line.erase(line.find_last_not_of(" \t\r\n") + 1);
-                if (!line.empty() && line[0] != '#') {
-                    galactica_packages.insert(line);
+        if (packages.empty() && galactica_packages.empty()) {
+            print_status("Loading package database...");
+            load_package_db();
+            
+            std::ifstream index_file(pkg_index);
+            if (index_file.is_open()) {
+                std::string line;
+                while (std::getline(index_file, line)) {
+                    line.erase(0, line.find_first_not_of(" \t\r\n"));
+                    line.erase(line.find_last_not_of(" \t\r\n") + 1);
+                    if (!line.empty() && line[0] != '#') {
+                        galactica_packages.insert(line);
+                    }
                 }
             }
         }
-    }
-    
-    if (packages.empty() && galactica_packages.empty()) {
-        print_warning("Package database is empty. Run 'dreamland sync' first.");
-        return false;
-    }
+        
+        if (packages.empty() && galactica_packages.empty()) {
+            print_warning("Package database is empty. Run 'dreamland sync' first.");
+            return false;
+        }
         
         if (installed.find(pkg_name) != installed.end()) {
             print_warning(pkg_name + " is already installed");
             return true;
         }
         
-        // Try to find package:
         Package* pkg_ptr = nullptr;
         
-        // If --arch flag, only check Arch
         if (force_arch) {
             auto it = packages.find(pkg_name);
             if (it != packages.end() && it->second.source == PackageSource::ARCH_BINARY) {
                 pkg_ptr = &it->second;
-                std::cout << YELLOW << "→ Forcing Arch binary (--arch flag)" << RESET << "\n\n";
+                std::cout << YELLOW << "→ Using Arch binary (--arch flag)" << RESET << "\n\n";
             } else {
                 print_error("Package not found in Arch repositories: " + pkg_name);
                 return false;
             }
-        }
-        // If --source flag, only check Galactica
-        else if (force_source) {
+        } else {
+            // Try Galactica FIRST (source-first philosophy)
             if (load_galactica_package(pkg_name)) {
                 auto it = packages.find(pkg_name);
                 if (it != packages.end()) {
                     pkg_ptr = &it->second;
-                    std::cout << CYAN << "→ Forcing source build (--source flag)" << RESET << "\n\n";
+                    std::cout << CYAN << "→ Building from source (Galactica)" << RESET << "\n\n";
                 }
             }
+            
+            // Fall back to Arch if not in Galactica
             if (!pkg_ptr) {
-                print_error("Package not found in Galactica repository: " + pkg_name);
-                print_warning("Try without --source flag to use Arch binary");
-                return false;
-            }
-        }
-        // Normal priority: Galactica first, then Arch
-        else {
-            // 1. Check if in loaded packages (Arch database)
-            auto it = packages.find(pkg_name);
-            
-            // 2. If not found, try Galactica
-            if (it == packages.end()) {
-                if (load_galactica_package(pkg_name)) {
-                    it = packages.find(pkg_name);
-                    print_status("Found " + pkg_name + " in Galactica repository");
+                auto it = packages.find(pkg_name);
+                if (it != packages.end() && it->second.source == PackageSource::ARCH_BINARY) {
+                    pkg_ptr = &it->second;
+                    std::cout << YELLOW << "→ Falling back to Arch binary (not in Galactica)" << RESET << "\n\n";
                 }
             }
             
-            // 3. If still not found, package doesn't exist
-            if (it == packages.end()) {
+            if (!pkg_ptr) {
                 print_error("Package not found: " + pkg_name);
-                print_warning("Not in Galactica repository or Arch repositories");
                 return false;
             }
-            
-            pkg_ptr = &it->second;
-            
-            // Show what source we're using
-            if (it->second.source == PackageSource::GALACTICA) {
-                std::cout << CYAN << "→ Building from source (Galactica repository)" << RESET << "\n";
-            } else {
-                std::cout << YELLOW << "→ Installing from Arch repository (binary)" << RESET << "\n";
-            }
-            std::cout << "\n";
         }
         
         print_status("Resolving dependencies for " + pkg_name + "...");
@@ -1241,16 +1188,26 @@ public:
         
         for (const auto& name : install_order) {
             if (!installed.count(name)) {
+                // Try to load from Galactica first
+                if (packages.find(name) == packages.end()) {
+                    load_galactica_package(name);
+                }
+                
                 auto& pkg = packages[name];
-                std::string source_label = (pkg.source == PackageSource::GALACTICA) ? 
-                    CYAN "[source]" RESET : YELLOW "[binary]" RESET;
+                
+                std::string source_label;
+                if (force_arch || pkg.source == PackageSource::ARCH_BINARY) {
+                    source_label = YELLOW "[binary]" RESET;
+                    total_size += pkg.size;
+                } else {
+                    source_label = CYAN "[source]" RESET;
+                }
                 
                 std::cout << "  " << (++to_install) << ". " << PINK << name << RESET 
                           << " " << source_label;
                 
-                if (pkg.source == PackageSource::ARCH_BINARY) {
+                if (pkg.source == PackageSource::ARCH_BINARY && pkg.size > 0) {
                     std::cout << " (" << (pkg.size / 1024 / 1024) << " MB)";
-                    total_size += pkg.size;
                 }
                 std::cout << "\n";
             }
@@ -1264,7 +1221,7 @@ public:
         std::cout << "\n";
         std::cout << "Total packages: " << to_install << "\n";
         if (total_size > 0) {
-            std::cout << "Download size: " << (total_size / 1024 / 1024) << " MB (binary packages)\n";
+            std::cout << "Download size: " << (total_size / 1024 / 1024) << " MB (binaries)\n";
         }
         std::cout << "\n";
         
@@ -1277,19 +1234,23 @@ public:
             return false;
         }
         
-        // Install packages in order
+        // Install packages
         for (const auto& name : install_order) {
             if (installed.count(name)) continue;
             
             std::cout << "\n";
             std::cout << BLUE << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" << RESET << "\n";
             
+            if (packages.find(name) == packages.end()) {
+                load_galactica_package(name);
+            }
+            
             const auto& pkg = packages[name];
             bool success = false;
             
-            if (pkg.source == PackageSource::GALACTICA) {
+            if (!force_arch && pkg.source == PackageSource::GALACTICA) {
                 success = install_from_galactica(pkg);
-            } else if (pkg.source == PackageSource::ARCH_BINARY) {
+            } else if (pkg.source == PackageSource::ARCH_BINARY || force_arch) {
                 success = install_from_arch(pkg);
             }
             
@@ -1318,22 +1279,22 @@ public:
         
         std::cout << "Installed packages (" << installed.size() << "):\n\n";
         
-        int galactica_count = 0;
-        int arch_count = 0;
+        int source_count = 0;
+        int binary_count = 0;
         
         for (const auto& [name, pkg] : installed) {
             std::string source_tag = (pkg.source == PackageSource::GALACTICA) ? 
-                CYAN " [galactica]" RESET : YELLOW " [arch]" RESET;
+                CYAN " [source]" RESET : YELLOW " [binary]" RESET;
             
             std::cout << PINK << name << RESET << " " << pkg.version << source_tag << "\n";
             
-            if (pkg.source == PackageSource::GALACTICA) galactica_count++;
-            else arch_count++;
+            if (pkg.source == PackageSource::GALACTICA) source_count++;
+            else binary_count++;
         }
         
         std::cout << "\n";
-        std::cout << "Built from source: " << galactica_count << "\n";
-        std::cout << "From Arch (binary): " << arch_count << "\n";
+        std::cout << "Built from source: " << source_count << "\n";
+        std::cout << "Binary (from Arch): " << binary_count << "\n";
     }
 
     void clean() {
@@ -1363,8 +1324,8 @@ public:
             }
         }
         
-        std::cout << "Package cache (Arch binaries): " << (pkg_cache_size / 1024.0 / 1024.0) << " MB (" << pkg_count << " files)\n";
-        std::cout << "Build cache (source builds): " << (build_cache_size / 1024.0 / 1024.0) << " MB (" << build_count << " files)\n\n";
+        std::cout << "Binary cache: " << (pkg_cache_size / 1024.0 / 1024.0) << " MB (" << pkg_count << " files)\n";
+        std::cout << "Build cache: " << (build_cache_size / 1024.0 / 1024.0) << " MB (" << build_count << " files)\n\n";
         
         std::string confirm;
         std::cout << "Remove all caches? (y/n): ";
@@ -1390,25 +1351,23 @@ public:
         std::cout << "Usage: " << prog << " <command> [options]\n\n";
         std::cout << "Commands:\n";
         std::cout << "  sync                     Sync package databases\n";
-        std::cout << "  install [opts] <package> Install a package (with dependencies)\n";
+        std::cout << "  install [opts] <package> Install a package\n";
         std::cout << "  search <query>           Search for packages\n";
         std::cout << "  list                     List installed packages\n";
         std::cout << "  clean                    Clean caches\n";
         std::cout << "\nInstall Options:\n";
-        std::cout << "  --arch                   Force Arch binary (even if in Galactica)\n";
-        std::cout << "  --source                 Force source build (fail if not in Galactica)\n";
+        std::cout << "  --arch                   Force Arch binary (skip source build)\n";
         std::cout << "\nExamples:\n";
         std::cout << "  " << prog << " sync\n";
         std::cout << "  " << prog << " search editor\n";
-        std::cout << "  " << prog << " install neovim          # Auto: source if in Galactica, else Arch\n";
-        std::cout << "  " << prog << " install --arch neovim   # Force Arch binary (fast!)\n";
-        std::cout << "  " << prog << " install --source neovim # Force source build\n";
-        std::cout << "  " << prog << " install htop            # Auto: from Arch (not in Galactica)\n";
-        std::cout << "\nHow it works:\n";
-        std::cout << "  " << CYAN << "• Galactica packages" << RESET << " - Built from source (your repo)\n";
-        std::cout << "  " << YELLOW << "• Arch packages" << RESET << " - Binary fallback (fast!)\n";
-        std::cout << "  • Smart priority: Galactica first, then Arch\n";
-        std::cout << "  • Override with --arch or --source flags\n";
+        std::cout << "  " << prog << " install vim          # Builds from source (Galactica)\n";
+        std::cout << "  " << prog << " install --arch vim   # Forces Arch binary (faster)\n";
+        std::cout << "  " << prog << " install htop         # From Arch (not in Galactica)\n";
+        std::cout << "\nPhilosophy:\n";
+        std::cout << "  " << CYAN << "• Source-first:" << RESET << " Build from Galactica by default\n";
+        std::cout << "  " << YELLOW << "• Binary fallback:" << RESET << " Use --arch for speed/convenience\n";
+        std::cout << "  • Full control over your system\n";
+        std::cout << "  • Transparency and reproducibility\n";
         std::cout << "\nConfiguration:\n";
         std::cout << "  Your repo:  " GALACTICA_REPO "\n";
         std::cout << "  Cache:      " << cache_dir << "\n";
@@ -1434,17 +1393,13 @@ int main(int argc, char* argv[]) {
             dl.search(argv[2]);
         }
         else if (command == "install" && argc >= 3) {
-            // Parse flags
             bool force_arch = false;
-            bool force_source = false;
             std::string pkg_name;
             
             for (int i = 2; i < argc; i++) {
                 std::string arg = argv[i];
                 if (arg == "--arch") {
                     force_arch = true;
-                } else if (arg == "--source") {
-                    force_source = true;
                 } else {
                     pkg_name = arg;
                 }
@@ -1456,12 +1411,7 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             
-            if (force_arch && force_source) {
-                std::cerr << RED << "Error: Cannot use --arch and --source together" << RESET << "\n";
-                return 1;
-            }
-            
-            return dl.install_package(pkg_name, force_arch, force_source) ? 0 : 1;
+            return dl.install_package(pkg_name, force_arch) ? 0 : 1;
         }
         else if (command == "list") {
             dl.list_installed();
