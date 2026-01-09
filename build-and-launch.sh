@@ -331,21 +331,53 @@ build_airridectl() {
 }
 
 build_dreamland() {
-    print_step 5 11 "Build Dreamland Hybrid Package Manager"
+    print_step 5 12 "Build Dreamland Package Manager + Modules"
     cd "$DREAMLAND_DIR"
+    
+    # Check for required libraries
+    if ! pkg-config --exists libcurl libarchive 2>/dev/null; then
+        print_warning "Some libraries missing, trying anyway..."
+    fi
+    
     mkdir -p build
     
-    # Build with static linking for curl
+    # Build main binary
+    print_info "Building dreamland binary..."
     g++ -o build/dreamland src/main.cpp \
-        -std=c++17 -O2 -Wall -Wextra \
-        -static-libgcc -static-libstdc++ \
-        -lcurl -lssl -lcrypto -lz -lzstd -larchive -lpthread \
-        -lnghttp2 -lnghttp3 -lngtcp2 -lngtcp2_crypto_openssl \
-        || g++ -o build/dreamland src/main.cpp \
-        -std=c++17 -O2 -Wall -Wextra \
-        -lcurl -lssl -lcrypto -lz -lzstd -larchive -lpthread || return 1
+        -std=c++17 -O2 -Wall -Wextra -fPIC \
+        -lcurl -lssl -lcrypto -lz -lzstd -larchive -lpthread -ldl \
+        2>&1 || {
+        print_error "Dreamland build failed"
+        return 1
+    }
+    print_success "Dreamland binary built"
     
-    print_success "Dreamland (hybrid) built"
+    # Build workspace module
+    if [[ -f modules/workspace/src/workspace.cpp ]]; then
+        print_info "Building workspace module..."
+        g++ -std=c++17 -O2 -Wall -Wextra -fPIC -shared \
+            -I include \
+            -o build/workspace.so \
+            modules/workspace/src/workspace.cpp \
+            2>&1 || print_warning "Workspace module build failed (optional)"
+        [[ -f build/workspace.so ]] && print_success "Workspace module built"
+    fi
+    
+    # Build any other modules in modules/
+    for mod_dir in modules/*/; do
+        mod_name=$(basename "$mod_dir")
+        [[ "$mod_name" == "workspace" ]] && continue
+        if [[ -f "${mod_dir}src/${mod_name}.cpp" ]]; then
+            print_info "Building $mod_name module..."
+            g++ -std=c++17 -O2 -Wall -Wextra -fPIC -shared \
+                -I include \
+                -o "build/${mod_name}.so" \
+                "${mod_dir}src/${mod_name}.cpp" \
+                2>&1 || print_warning "$mod_name module build failed"
+        fi
+    done
+    
+    print_success "Dreamland built"
     cd ..
 }
 
