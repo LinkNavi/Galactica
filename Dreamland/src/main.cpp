@@ -130,7 +130,7 @@ void load_all_mods() {
     }
 }
 
-    void banner() { std::cout << PINK << "    ★ DREAMLAND ★\n    Package Manager + Modules\n" << RESET << "\n"; }
+    void banner() { std::cout << PINK << "    ★ DREAMLAND ★\n    User's Choice\n" << RESET << "\n"; }
     void status(const std::string& m) { std::cout << BLUE << "[★] " << RESET << m << "\n"; }
     void ok(const std::string& m) { std::cout << GREEN << "[✓] " << RESET << m << "\n"; }
     void err(const std::string& m) { std::cerr << RED << "[✗] " << RESET << m << "\n"; }
