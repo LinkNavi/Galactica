@@ -1,31 +1,21 @@
 #!/bin/bash
-# Enhanced Galactica launcher with debug modes
-
 KERNEL="galactica-build/boot/vmlinuz-galactica"
 ROOTFS="galactica-rootfs.img"
 
-if [[ ! -f "$KERNEL" ]] || [[ ! -f "$ROOTFS" ]]; then
-    echo "Error: Kernel or rootfs not found!"
-    echo "Kernel: $KERNEL"
-    echo "Rootfs: $ROOTFS"
-    exit 1
-fi
+[[ ! -f "$KERNEL" || ! -f "$ROOTFS" ]] && { echo "Error: Kernel or rootfs not found!"; exit 1; }
 
 echo "=== Galactica Boot Menu ==="
 echo ""
-echo "Choose boot mode:"
+echo "  1) Normal boot (with networking)"
+echo "  2) Debug boot (verbose)"
+echo "  3) Emergency shell"
+echo "  4) No networking"
 echo ""
-echo "  1) Normal boot (AirRide init)"
-echo "  2) Debug boot (verbose kernel output)"
-echo "  3) Emergency shell (bypass AirRide)"
-echo "  4) Single user mode (skip services)"
-echo "  5) Init debug (show what init does)"
-echo ""
-read -p "Select mode (1-5) [1]: " mode
+read -p "Select (1-4) [1]: " mode
 mode=${mode:-1}
 
-# Base QEMU command
-QEMU_CMD="qemu-system-x86_64 \
+# Base QEMU command - ALWAYS include networking
+QEMU_BASE="qemu-system-x86_64 \
     -kernel $KERNEL \
     -drive file=$ROOTFS,format=raw,if=virtio \
     -m 512M \
@@ -33,58 +23,28 @@ QEMU_CMD="qemu-system-x86_64 \
     -nographic \
     -serial mon:stdio"
 
+# User-mode networking with port forwarding
+# - Guest can access internet through host
+# - SSH to guest: ssh -p 2222 root@localhost
+QEMU_NET="-netdev user,id=net0,hostfwd=tcp::2222-:22 -device e1000,netdev=net0"
+
 case $mode in
-    1)
-        echo ""
-        echo "Starting normal boot..."
+    1) 
+        echo "Starting with networking..."
+        echo "SSH available at: ssh -p 2222 root@localhost"
         echo "Press Ctrl+A then X to exit"
-        echo ""
-        $QEMU_CMD \
-            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init"
+        $QEMU_BASE $QEMU_NET -append "root=/dev/vda rw console=ttyS0 init=/sbin/init quiet"
         ;;
-    
-    2)
-        echo ""
-        echo "Starting debug boot with verbose output..."
-        echo "Watch for errors in the kernel messages"
-        echo "Press Ctrl+A then X to exit"
-        echo ""
-        $QEMU_CMD \
-            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init debug loglevel=7 earlyprintk=serial"
+    2) 
+        echo "Debug mode with networking..."
+        $QEMU_BASE $QEMU_NET -append "root=/dev/vda rw console=ttyS0 init=/sbin/init debug loglevel=7"
         ;;
-    
-    3)
-        echo ""
-        echo "Starting emergency shell..."
-        echo "This bypasses AirRide and gives you /bin/sh"
-        echo "Press Ctrl+A then X to exit"
-        echo ""
-        $QEMU_CMD \
-            -append "root=/dev/vda rw console=ttyS0 init=/bin/sh"
+    3) 
+        echo "Emergency shell..."
+        $QEMU_BASE $QEMU_NET -append "root=/dev/vda rw console=ttyS0 init=/bin/sh"
         ;;
-    
     4)
-        echo ""
-        echo "Starting single user mode..."
-        echo "This starts AirRide but may skip services"
-        echo "Press Ctrl+A then X to exit"
-        echo ""
-        $QEMU_CMD \
-            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init single"
-        ;;
-    
-    5)
-        echo ""
-        echo "Starting with init debugging..."
-        echo "This shows what the init system is doing"
-        echo "Press Ctrl+A then X to exit"
-        echo ""
-        $QEMU_CMD \
-            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init debug loglevel=7"
-        ;;
-    
-    *)
-        echo "Invalid selection"
-        exit 1
+        echo "No networking..."
+        $QEMU_BASE -append "root=/dev/vda rw console=ttyS0 init=/sbin/init"
         ;;
 esac

@@ -1,0 +1,11 @@
+
+[Service]
+name=network
+description=Network Configuration
+type=oneshot
+exec_start=/sbin/network-setup
+autostart=true
+parallel=true
+
+[Dependencies]
+

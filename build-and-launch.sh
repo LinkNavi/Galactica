@@ -1,10 +1,7 @@
 #!/bin/bash
-# Galactica Complete Build Script - FIXED for GCC 13+ C23 compatibility
-# This version properly handles the C23 keyword conflicts
-
+# Galactica Complete Build Script - Enhanced Networking + Service Autostart
 set -e
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -14,7 +11,6 @@ PINK='\033[38;5;213m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# Configuration
 TARGET_ROOT="./galactica-build"
 KERNEL_DIR=""
 AIRRIDE_DIR="./AirRide"
@@ -22,15 +18,8 @@ DREAMLAND_DIR="./Dreamland"
 POYO_DIR="./Poyo"
 OUTPUT_ROOTFS="galactica-rootfs.img"
 ROOTFS_SIZE=1024
-
-KERNEL_VERSION="6.18.4"  # Latest stable
+KERNEL_VERSION="6.18.4"
 USE_PAM=false
-
-declare -A COMPLETED_STEPS
-
-# ============================================
-# Helper Functions
-# ============================================
 
 print_banner() {
     clear
@@ -42,694 +31,323 @@ print_banner() {
 \    \_\  \/ __ \|  |__/ __ \\  \___|  | |  \  \___ / __ \_
  \______  (____  /____(____  /\___  >__| |__|\___  >____  /
         \/     \/          \/     \/             \/     \/ 
-
-    Complete Build System - FIXED for GCC 13+
 EOF
     echo -e "${NC}"
-    echo -e "${BOLD}=== Galactica Build Script v3.1 (C23 Fix) ===${NC}"
+    echo -e "${BOLD}=== Galactica Build v4.0 - Full Networking ===${NC}"
     echo ""
 }
 
-print_step() {
-    echo ""
-    echo -e "${BOLD}${BLUE}[STEP $1/$2]${NC} ${BOLD}$3${NC}"
-    echo -e "${CYAN}$(printf '=%.0s' {1..60})${NC}"
-    echo ""
-}
-
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}✗${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}!${NC} $1"
-}
-
-print_info() {
-    echo -e "${CYAN}→${NC} $1"
-}
-
-check_dependency() {
-    local cmd=$1
-    local pkg=$2
-    if ! command -v "$cmd" &>/dev/null; then
-        print_error "$cmd not found"
-        echo "   Install it with: sudo apt install $pkg"
-        return 1
-    fi
-    return 0
-}
-
-# ============================================
-# Pre-flight Checks
-# ============================================
+print_step() { echo -e "\n${BOLD}${BLUE}[STEP $1/$2]${NC} ${BOLD}$3${NC}\n${CYAN}$(printf '=%.0s' {1..60})${NC}\n"; }
+print_success() { echo -e "${GREEN}✓${NC} $1"; }
+print_error() { echo -e "${RED}✗${NC} $1"; }
+print_warning() { echo -e "${YELLOW}!${NC} $1"; }
+print_info() { echo -e "${CYAN}→${NC} $1"; }
 
 preflight_checks() {
     print_step 0 11 "Pre-flight Checks"
-    
     local all_ok=true
     
-    print_info "Checking required tools..."
+    for cmd in gcc g++ make bc flex bison dd mkfs.ext4; do
+        command -v "$cmd" &>/dev/null || { print_error "$cmd not found"; all_ok=false; }
+    done
     
-    check_dependency "gcc" "build-essential" || all_ok=false
-    check_dependency "g++" "build-essential" || all_ok=false
-    check_dependency "make" "build-essential" || all_ok=false
-    check_dependency "bc" "bc" || all_ok=false
-    check_dependency "flex" "flex" || all_ok=false
-    check_dependency "bison" "bison" || all_ok=false
-    check_dependency "dd" "coreutils" || all_ok=false
-    check_dependency "mkfs.ext4" "e2fsprogs" || all_ok=false
+    command -v busybox &>/dev/null && print_success "busybox found" || { print_warning "busybox not found"; all_ok=false; }
+    command -v qemu-system-x86_64 &>/dev/null && print_success "QEMU found" || print_warning "QEMU not found"
     
-    # Check GCC version
-    GCC_VERSION=$(gcc -dumpversion | cut -d. -f1)
-    print_info "GCC Version: $GCC_VERSION"
-    if [[ $GCC_VERSION -ge 13 ]]; then
-        print_warning "GCC 13+ detected - will use C11 to avoid C23 keyword conflicts"
-    fi
-    
-    if [[ "$USE_PAM" == "true" ]]; then
-        if ldconfig -p | grep -q libpam; then
-            print_success "PAM libraries found"
-        else
-            print_warning "PAM libraries not found"
-            USE_PAM=false
-        fi
-    fi
-    
-    if command -v busybox &>/dev/null; then
-        print_success "busybox found"
-    else
-        print_warning "busybox not found - install: sudo apt install busybox-static"
-        all_ok=false
-    fi
-    
-    if command -v qemu-system-x86_64 &>/dev/null; then
-        print_success "QEMU found"
-    else
-        print_warning "QEMU not found - install: sudo apt install qemu-system-x86"
-    fi
-    
-    echo ""
-    
-    if [[ "$all_ok" == "true" ]]; then
-        print_success "All dependencies satisfied"
-        return 0
-    else
-        print_error "Missing dependencies. Install them and try again."
-        return 1
-    fi
+    [[ "$all_ok" == "true" ]] && print_success "All dependencies satisfied" || { print_error "Missing dependencies"; return 1; }
 }
 
-# ============================================
-# Step 1: Build Kernel with C23 Fix
-# ============================================
-
 build_kernel() {
-    print_step 1 11 "Build Linux Kernel (C23 Compatible)"
+    print_step 1 11 "Build Linux Kernel with Full Networking"
     
     local KERNEL_TARBALL="linux-${KERNEL_VERSION}.tar.xz"
     local KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/${KERNEL_TARBALL}"
     local KERNEL_CACHE_DIR="./kernel-cache"
     
-    # Check if already built
-    if [[ -f "$TARGET_ROOT/boot/vmlinuz-galactica" ]]; then
-        print_info "Checking existing kernel..."
-        if [[ -f "$TARGET_ROOT/boot/.kernel-version" ]]; then
-            EXISTING_VERSION=$(cat "$TARGET_ROOT/boot/.kernel-version")
-            if [[ "$EXISTING_VERSION" == "$KERNEL_VERSION" ]]; then
-                print_success "Kernel $KERNEL_VERSION already built"
-                read -p "Rebuild anyway? (y/n) [n]: " rebuild
-                rebuild=${rebuild:-n}
-                if [[ "$rebuild" != "y" ]]; then
-                    COMPLETED_STEPS[kernel]=1
-                    return 0
-                fi
-            fi
+    if [[ -f "$TARGET_ROOT/boot/vmlinuz-galactica" ]] && [[ -f "$TARGET_ROOT/boot/.kernel-version" ]]; then
+        if [[ "$(cat $TARGET_ROOT/boot/.kernel-version)" == "$KERNEL_VERSION" ]]; then
+            print_success "Kernel $KERNEL_VERSION already built"
+            read -p "Rebuild? (y/n) [n]: " rebuild
+            [[ "$rebuild" != "y" ]] && return 0
         fi
     fi
     
-    # Download if needed
-    if [[ ! -d "$KERNEL_DIR" ]]; then
-        KERNEL_DIR="./linux-${KERNEL_VERSION}"
-        mkdir -p "$KERNEL_CACHE_DIR"
-        
-        if [[ ! -f "$KERNEL_CACHE_DIR/$KERNEL_TARBALL" ]]; then
-            print_info "Downloading Linux kernel ${KERNEL_VERSION}..."
-            print_info "This is a one-time download (~140 MB)"
-            
-            if command -v wget &>/dev/null; then
-                wget -O "$KERNEL_CACHE_DIR/$KERNEL_TARBALL" "$KERNEL_URL" || {
-                    print_error "Failed to download kernel"
-                    return 1
-                }
-            elif command -v curl &>/dev/null; then
-                curl -L -o "$KERNEL_CACHE_DIR/$KERNEL_TARBALL" "$KERNEL_URL" || {
-                    print_error "Failed to download kernel"
-                    return 1
-                }
-            else
-                print_error "Neither wget nor curl found"
-                return 1
-            fi
-        fi
-        
-        print_info "Extracting kernel source..."
-        tar -xf "$KERNEL_CACHE_DIR/$KERNEL_TARBALL" || {
-            print_error "Failed to extract kernel"
-            return 1
-        }
+    [[ -z "$KERNEL_DIR" ]] && KERNEL_DIR="./linux-${KERNEL_VERSION}"
+    mkdir -p "$KERNEL_CACHE_DIR"
+    
+    if [[ ! -f "$KERNEL_CACHE_DIR/$KERNEL_TARBALL" ]]; then
+        print_info "Downloading kernel..."
+        wget -O "$KERNEL_CACHE_DIR/$KERNEL_TARBALL" "$KERNEL_URL" || curl -L -o "$KERNEL_CACHE_DIR/$KERNEL_TARBALL" "$KERNEL_URL"
     fi
+    
+    [[ ! -d "$KERNEL_DIR" ]] && tar -xf "$KERNEL_CACHE_DIR/$KERNEL_TARBALL"
     
     cd "$KERNEL_DIR"
     
-    # ===== CRITICAL FIX: Set C standard BEFORE any make commands =====
-    print_info "Applying C23 compatibility fix..."
     GCC_VERSION=$(gcc -dumpversion | cut -d. -f1)
-    
     if [[ $GCC_VERSION -ge 13 ]]; then
-        print_warning "GCC $GCC_VERSION detected - forcing C11 standard"
-        
-        # Export flags that will be used by ALL kernel build steps
-        export KCFLAGS="-std=gnu11"
-        export HOSTCFLAGS="-std=gnu11"
-        export KBUILD_CFLAGS="-std=gnu11"
-        export CC="gcc -std=gnu11"
-        export HOSTCC="gcc -std=gnu11"
-        
-        print_success "Set C11 standard for kernel build"
-        
-        # Verify the fix will work
-        echo "Testing compiler with C11..."
-        echo 'int main() { return 0; }' | gcc -std=gnu11 -x c - -o /tmp/test$$ 2>&1
-        if [[ $? -eq 0 ]]; then
-            print_success "Compiler accepts -std=gnu11"
-            rm -f /tmp/test$$
-        else
-            print_error "Compiler test failed!"
-            return 1
-        fi
+        export KCFLAGS="-std=gnu11" HOSTCFLAGS="-std=gnu11" CC="gcc -std=gnu11" HOSTCC="gcc -std=gnu11"
     fi
     
-    # Check/create config
-    local REBUILD_CONFIG=false
-    if [[ ! -f .config ]]; then
-        REBUILD_CONFIG=true
-    elif ! grep -q "CONFIG_VIRTIO_BLK=y" .config; then
-        REBUILD_CONFIG=true
-    fi
-    
-    if [[ "$REBUILD_CONFIG" == "true" ]]; then
-        print_info "Creating kernel configuration..."
-        
-        # Clean any previous build artifacts
+    if [[ ! -f .config ]] || ! grep -q "CONFIG_VIRTIO_NET=y" .config; then
+        print_info "Creating kernel config with full networking..."
         make mrproper 2>/dev/null || true
-        
-        # Start with minimal config
         make tinyconfig || make allnoconfig
         
-        print_info "Enabling essential features..."
-        
         cat >> .config << 'EOF'
-
-# ============================================
-
-# ============================================
+# Architecture
 CONFIG_64BIT=y
 CONFIG_X86_64=y
 CONFIG_SMP=y
 CONFIG_PCI=y
 CONFIG_ACPI=y
-CONFIG_SERIAL_8250_CONSOLE=y 
-CONFIG_FILE_LOCKING=y
-CONFIG_EPOLL=y
-CONFIG_FUTEX=y
-# User/Group Management Support
-CONFIG_MULTIUSER=y
-CONFIG_SYSVIPC=y
 
-CONFIG_CROSS_MEMORY_ATTACH=y
-
-# User Namespaces (required for modern user management)
-CONFIG_USER_NS=y
-
-# UID16 support (legacy, but some tools need it)
-CONFIG_UID16=y
-
-# Audit support (optional but recommended)
-CONFIG_AUDIT=y
-CONFIG_AUDITSYSCALL=y
-
-# Capabilities (required for privilege management)
-CONFIG_SECURITY_CAPABILITIES=y
-
-# Access Control Lists
-CONFIG_FS_POSIX_ACL=y
-
-# Quotas (optional but useful)
-CONFIG_QUOTA=y
-CONFIG_QUOTACTL=y
-# ============================================
-
-# ============================================
+# Essential
 CONFIG_BINFMT_ELF=y
 CONFIG_BINFMT_SCRIPT=y
-
-# ============================================
-
-# ============================================
 CONFIG_MMU=y
 CONFIG_SLAB=y
-
-# ============================================
-
-# ============================================
-CONFIG_UNIX=y
+CONFIG_MULTIUSER=y
 CONFIG_SYSVIPC=y
 CONFIG_POSIX_MQUEUE=y
+CONFIG_FUTEX=y
+CONFIG_EPOLL=y
 CONFIG_SIGNALFD=y
 CONFIG_EVENTFD=y
+CONFIG_TIMERFD=y
+CONFIG_FILE_LOCKING=y
 
-# ============================================
-
-# ============================================
+# Filesystems
 CONFIG_PROC_FS=y
 CONFIG_SYSFS=y
 CONFIG_TMPFS=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_USE_FOR_EXT2=y
 
-# ============================================
+# Block/Storage
+CONFIG_BLOCK=y
+CONFIG_BLK_DEV=y
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
 
-# ============================================
+# VIRTIO (for QEMU)
+CONFIG_VIRTIO_MENU=y
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_PCI_LEGACY=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_SCSI_VIRTIO=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VIRTIO_BALLOON=y
+CONFIG_VIRTIO_INPUT=y
+CONFIG_VIRTIO_MMIO=y
+
+# Console/TTY
 CONFIG_TTY=y
 CONFIG_VT=y
 CONFIG_VT_CONSOLE=y
 CONFIG_UNIX98_PTYS=y
-
-
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
 CONFIG_SERIAL_CORE=y
 CONFIG_SERIAL_CORE_CONSOLE=y
 CONFIG_HW_CONSOLE=y
+CONFIG_VGA_CONSOLE=y
+CONFIG_DUMMY_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
 CONFIG_PRINTK=y
 
-
-CONFIG_VGA_CONSOLE=y
-
 # ============================================
-
-# ============================================
-CONFIG_BLOCK=y
-CONFIG_BLK_DEV=y
-
-# ============================================
-
-# ============================================
-CONFIG_SCSI=y
-CONFIG_BLK_DEV_SD=y
-
-# ============================================
-
+# FULL NETWORKING STACK
 # ============================================
 CONFIG_NET=y
 CONFIG_INET=y
+CONFIG_IP_MULTICAST=y
+CONFIG_IP_ADVANCED_ROUTER=y
+CONFIG_IP_PNP=y
+CONFIG_IP_PNP_DHCP=y
+CONFIG_IP_PNP_BOOTP=y
+
+# TCP/IP
+CONFIG_TCP_CONG_ADVANCED=y
+CONFIG_TCP_CONG_CUBIC=y
+CONFIG_DEFAULT_TCP_CONG="cubic"
+CONFIG_IPV6=y
+
+# Packet handling
 CONFIG_PACKET=y
+CONFIG_PACKET_DIAG=y
+CONFIG_UNIX=y
+CONFIG_UNIX_DIAG=y
+CONFIG_XFRM=y
+CONFIG_XFRM_USER=y
+
+# Netfilter/Firewall (basic)
+CONFIG_NETFILTER=y
+CONFIG_NETFILTER_ADVANCED=y
+CONFIG_NF_CONNTRACK=y
+CONFIG_NF_TABLES=y
+CONFIG_NFT_CT=y
+CONFIG_NFT_COUNTER=y
+CONFIG_NFT_LOG=y
+CONFIG_NFT_NAT=y
+CONFIG_NFT_MASQ=y
+CONFIG_NF_NAT=y
+CONFIG_IP_NF_IPTABLES=y
+CONFIG_IP_NF_FILTER=y
+CONFIG_IP_NF_NAT=y
+CONFIG_IP_NF_TARGET_MASQUERADE=y
+
+# DNS/Resolver
+CONFIG_DNS_RESOLVER=y
+
+# Network device support
+CONFIG_NETDEVICES=y
+CONFIG_NET_CORE=y
+CONFIG_ETHERNET=y
+CONFIG_NET_VENDOR_INTEL=y
+CONFIG_E1000=y
+CONFIG_E1000E=y
+CONFIG_NET_VENDOR_REALTEK=y
+CONFIG_8139CP=y
+CONFIG_8139TOO=y
+CONFIG_R8169=y
+
+# Wireless (basic support)
+CONFIG_WLAN=y
+CONFIG_CFG80211=m
+CONFIG_MAC80211=m
+
+# TUN/TAP for VPNs
+CONFIG_TUN=y
+CONFIG_TAP=y
+
+# Bridge support
+CONFIG_BRIDGE=y
+CONFIG_BRIDGE_NETFILTER=y
+
+# VLAN
+CONFIG_VLAN_8021Q=y
+
+# Bonding
+CONFIG_BONDING=y
+
+# Loopback
+CONFIG_DUMMY=y
 
 # ============================================
-
+# Additional useful features
 # ============================================
-CONFIG_VIRTIO_MENU=y
-CONFIG_VIRTIO=y
-CONFIG_VIRTIO_PCI=y
-CONFIG_VIRTIO_PCI_LEGACY=y
-CONFIG_VIRTIO_BALLOON=y
-CONFIG_VIRTIO_INPUT=y
-CONFIG_VIRTIO_MMIO=y
-CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y
-CONFIG_VIRTIO_BLK=y
-CONFIG_SCSI_VIRTIO=y
-CONFIG_VIRTIO_NET=y
-CONFIG_VIRTIO_CONSOLE=y
-
-# ============================================
-
-# ============================================
-CONFIG_EXT4_FS=y
-CONFIG_EXT4_USE_FOR_EXT2=y
-CONFIG_EXT4_FS_POSIX_ACL=y
-CONFIG_EXT4_FS_SECURITY=y
-
-# ============================================
-
-# ============================================
-CONFIG_SECURITY=y
-CONFIG_SECURITY_NETWORK=y
-CONFIG_SECURITYFS=y
-CONFIG_HARDENED_USERCOPY=y
-CONFIG_FORTIFY_SOURCE=y
-CONFIG_STACKPROTECTOR=y
-CONFIG_STACKPROTECTOR_STRONG=y
-CONFIG_STRICT_KERNEL_RWX=y
-CONFIG_PAGE_TABLE_ISOLATION=y
-CONFIG_RANDOMIZE_BASE=y
-
-# ============================================
-# ADDITIONAL CRITICAL OPTIONS YOU'RE MISSING
-
-
-
-CONFIG_EARLY_PRINTK=y
-CONFIG_EARLY_PRINTK_DBGP=y
-
-# Kernel output
-CONFIG_PRINTK_TIME=y
-
-# Devtmpfs needs this
-CONFIG_TMPFS_POSIX_ACL=y
-
-
-CONFIG_BLK_DEV_INITRD=y
-
-# Basic scheduler
-CONFIG_SCHED_DEBUG=y
-
-# Essential for userspace
-CONFIG_FUTEX=y
-CONFIG_EPOLL=y
-CONFIG_TIMERFD=y
-
-# File locking
-CONFIG_FILE_LOCKING=y
-CONFIG_MANDATORY_FILE_LOCKING=y
-
-
-CONFIG_NAMESPACES=y
-CONFIG_UTS_NS=y
-CONFIG_IPC_NS=y
-CONFIG_PID_NS=y
-CONFIG_NET_NS=y
-
-
-CONFIG_CGROUPS=y
-
-# Pseudo filesystems
-CONFIG_SYSFS_SYSCALL=y
-
-# Executable domains
-CONFIG_PROC_KCORE=y
-
-# ELF support
-CONFIG_BINFMT_ELF_FDPIC=y
-CONFIG_CORE_DUMP_DEFAULT_ELF_HEADERS=y
-
-# Misc essential options
 CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
 CONFIG_SYSCTL=y
 CONFIG_KALLSYMS=y
-CONFIG_PRINTK=y
 CONFIG_BUG=y
+CONFIG_NAMESPACES=y
+CONFIG_NET_NS=y
+CONFIG_USER_NS=y
+CONFIG_PID_NS=y
+CONFIG_CGROUPS=y
+CONFIG_BLK_DEV_INITRD=y
 
-# ============================================
+# Security
+CONFIG_SECURITY=y
+CONFIG_SECURITYFS=y
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_STACKPROTECTOR=y
+CONFIG_STACKPROTECTOR_STRONG=y
 
-# ============================================
-CONFIG_FB=y
-CONFIG_FRAMEBUFFER_CONSOLE=y
-CONFIG_DUMMY_CONSOLE=y
+# Crypto (for networking)
+CONFIG_CRYPTO=y
+CONFIG_CRYPTO_AEAD=y
+CONFIG_CRYPTO_CBC=y
+CONFIG_CRYPTO_ECB=y
+CONFIG_CRYPTO_SHA256=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_AES_NI_INTEL=y
+CONFIG_CRYPTO_CRC32C=y
+CONFIG_CRYPTO_CRC32C_INTEL=y
 
-# ============================================
+# Random number generation
+CONFIG_HW_RANDOM=y
+CONFIG_HW_RANDOM_VIRTIO=y
 
-# ============================================
+# KVM guest support
+CONFIG_HYPERVISOR_GUEST=y
+CONFIG_PARAVIRT=y
+CONFIG_KVM_GUEST=y
 
-CONFIG_CONSOLE_TRANSLATIONS=y
+# Fonts for console
 CONFIG_FONT_SUPPORT=y
 CONFIG_FONTS=y
 CONFIG_FONT_8x16=y
-
-# ============================================
-
-# ============================================
-CONFIG_PARAVIRT=y
-CONFIG_HYPERVISOR_GUEST=y
-CONFIG_KVM_GUEST=y
-
 EOF
         
-        # Apply config with our C11 flags already set
         make olddefconfig
-        
-        print_success "Kernel configured"
     fi
     
     # Verify critical options
-    print_info "Verifying configuration..."
-    for opt in CONFIG_VIRTIO CONFIG_VIRTIO_BLK CONFIG_EXT4_FS; do
-        if grep -q "^${opt}=y" .config; then
-            print_success "$opt enabled"
-        else
-            print_error "$opt NOT enabled!"
-            return 1
-        fi
+    for opt in CONFIG_VIRTIO_BLK CONFIG_VIRTIO_NET CONFIG_INET CONFIG_EXT4_FS; do
+        grep -q "^${opt}=y" .config || { print_error "$opt NOT enabled!"; return 1; }
     done
+    print_success "Kernel configured with full networking"
     
-    # Build
-    if [[ -f arch/x86/boot/bzImage ]]; then
-        print_info "Found existing kernel binary"
-        read -p "Rebuild? (y/n) [n]: " rebuild
-        rebuild=${rebuild:-n}
-        if [[ "$rebuild" != "y" ]]; then
-            cd ..
-            mkdir -p "$TARGET_ROOT/boot"
-            cp "$KERNEL_DIR/arch/x86/boot/bzImage" "$TARGET_ROOT/boot/vmlinuz-galactica"
-            echo "$KERNEL_VERSION" > "$TARGET_ROOT/boot/.kernel-version"
-            COMPLETED_STEPS[kernel]=1
-            return 0
-        fi
+    if [[ ! -f arch/x86/boot/bzImage ]]; then
+        print_info "Building kernel..."
+        make -j$(nproc) 2>&1 | tee ../kernel-build.log
     fi
     
-    print_info "Building kernel with C11 standard..."
-    print_info "Using $(nproc) CPU cores"
-    print_info "This will take 5-15 minutes..."
-    
-    # Clean and build with our flags
-    make clean
-    
-    # Build - our flags are already exported
-    make -j$(nproc) 2>&1 | tee ../kernel-build.log
-    
-    if [[ -f arch/x86/boot/bzImage ]]; then
-        print_success "Kernel built successfully!"
-        echo "$KERNEL_VERSION" > ../kernel-version.txt
-        COMPLETED_STEPS[kernel]=1
-    else
-        print_error "Kernel build failed!"
-        print_error "Check kernel-build.log for details"
-        print_error "The C23 compatibility fix may need adjustment"
-        return 1
-    fi
-    
+    [[ -f arch/x86/boot/bzImage ]] && print_success "Kernel built" || { print_error "Kernel build failed"; return 1; }
     cd ..
 }
 
-# ============================================
-# Remaining build steps (same as before)
-# ============================================
-
 build_poyo() {
     print_step 2 11 "Build Poyo Getty/Login"
-    
     cd "$POYO_DIR"
-    
-    CFLAGS="-Wall -Wextra -O2 -D_GNU_SOURCE -fstack-protector-strong"
-    LIBS="-lcrypt"
-    
-    local PAM_ENABLED=false
-    
-    if [[ "$USE_PAM" == "true" ]] && [[ -f /usr/include/security/pam_appl.h ]]; then
-        CFLAGS="$CFLAGS -DUSE_PAM"
-        LIBS="$LIBS -lpam -lpam_misc"
-        PAM_ENABLED=true
-        print_info "Enabling PAM support"
-    fi
-    
-    gcc $CFLAGS -o poyo src/main.c $LIBS || {
-        print_error "Failed to build Poyo"
-        return 1
-    }
-    
+    gcc -Wall -Wextra -O2 -D_GNU_SOURCE -fstack-protector-strong -o poyo src/main.c -lcrypt || return 1
     print_success "Poyo built"
-    
-    # If PAM is enabled, set up PAM configuration in build directory
-    if [[ "$PAM_ENABLED" == "true" ]]; then
-        print_info "Setting up PAM configuration..."
-        
-        # Create PAM directories in build root
-        mkdir -p "$TARGET_ROOT/etc/pam.d"
-        mkdir -p "$TARGET_ROOT/usr/lib/security"
-        
-        # Create PAM configuration for login
-        cat > "$TARGET_ROOT/etc/pam.d/login" << 'EOFPAM'
-#%PAM-1.0
-# PAM configuration for Poyo login
-
-# Authentication
-auth       required     pam_env.so
-auth       sufficient   pam_unix.so nullok try_first_pass
-auth       required     pam_deny.so
-
-# Account management  
-account    required     pam_unix.so
-account    required     pam_permit.so
-
-# Password management
-password   required     pam_unix.so nullok sha512
-password   required     pam_permit.so
-
-# Session management
-session    required     pam_unix.so
-session    optional     pam_lastlog.so
-session    required     pam_env.so
-EOFPAM
-        
-        # Create symlinks
-        ln -sf login "$TARGET_ROOT/etc/pam.d/poyo"
-        ln -sf login "$TARGET_ROOT/etc/pam.d/system-auth"
-        
-        # Create other required configs
-        cat > "$TARGET_ROOT/etc/pam.d/other" << 'EOFOTHER'
-#%PAM-1.0
-auth       required     pam_deny.so
-account    required     pam_deny.so
-password   required     pam_deny.so
-session    required     pam_deny.so
-EOFOTHER
-        
-        cat > "$TARGET_ROOT/etc/pam.conf" << 'EOFCONF'
-# PAM configuration file
-EOFCONF
-        
-        cat > "$TARGET_ROOT/etc/environment" << 'EOFENV'
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-EOFENV
-        
-        print_success "PAM configuration created"
-        
-        # Copy 64-bit PAM modules from host (Arch Linux)
-        print_info "Copying 64-bit PAM modules..."
-        
-        local PAM_SOURCE="/usr/lib/security"
-        local MODULE_COUNT=0
-        
-        if [[ -d "$PAM_SOURCE" ]]; then
-            for module in "$PAM_SOURCE"/pam_*.so; do
-                if [[ -f "$module" ]]; then
-                    # Only copy 64-bit modules
-                    if file "$module" | grep -q "64-bit"; then
-                        cp "$module" "$TARGET_ROOT/usr/lib/security/"
-                        MODULE_COUNT=$((MODULE_COUNT + 1))
-                    fi
-                fi
-            done
-            print_success "Copied $MODULE_COUNT PAM modules (64-bit only)"
-        else
-            print_warning "PAM modules not found at $PAM_SOURCE"
-        fi
-        
-        # Copy 64-bit PAM libraries
-        print_info "Copying 64-bit PAM libraries..."
-        
-        for lib_pattern in "libpam.so*" "libpam_misc.so*"; do
-            for lib in /usr/lib/$lib_pattern; do
-                if [[ -f "$lib" ]] && file "$lib" | grep -q "64-bit"; then
-                    cp "$lib" "$TARGET_ROOT/usr/lib/"
-                fi
-            done
-        done
-        
-        print_success "PAM libraries copied (64-bit only)"
-        
-        print_info "PAM support fully configured"
-    fi
-    
-    COMPLETED_STEPS[poyo]=1
     cd ..
 }
 
 build_airride() {
     print_step 3 11 "Build AirRide Init"
-    
     cd "$AIRRIDE_DIR/Init"
     mkdir -p build
-    
-    g++ -o build/airride src/main.cpp \
-        -Wall -Wextra -O2 -std=c++17 \
-        -fstack-protector-strong || {
-        print_error "Failed to build AirRide"
-        return 1
-    }
-    
+    g++ -o build/airride src/main.cpp -Wall -Wextra -O2 -std=c++17 -fstack-protector-strong || return 1
     print_success "AirRide built"
-    COMPLETED_STEPS[airride]=1
     cd ../..
 }
 
 build_airridectl() {
     print_step 4 11 "Build AirRideCtl"
-    
     cd "$AIRRIDE_DIR/Ctl"
     mkdir -p build
-    
-    g++ -o build/airridectl src/main.cpp \
-        -Wall -Wextra -O2 -std=c++17 || {
-        print_error "Failed to build AirRideCtl"
-        return 1
-    }
-    
+    g++ -o build/airridectl src/main.cpp -Wall -Wextra -O2 -std=c++17 || return 1
     print_success "AirRideCtl built"
-    COMPLETED_STEPS[airridectl]=1
     cd ../..
 }
 
 build_dreamland() {
     print_step 5 11 "Build Dreamland Package Manager"
-    
     cd "$DREAMLAND_DIR"
     mkdir -p build
-    
-    g++ -o build/dreamland src/main.cpp \
-        -Wall -Wextra -O2 -std=c++17 \
-        -lcurl -lssl -lcrypto -lz -lzstd || {
-        print_error "Failed to build Dreamland"
-        return 1
-    }
-    
+    g++ -o build/dreamland src/main.cpp -Wall -Wextra -O2 -std=c++17 -lcurl -lssl -lcrypto -lz -lzstd || return 1
     print_success "Dreamland built"
-    COMPLETED_STEPS[dreamland]=1
     cd ..
 }
 
 prepare_build_dir() {
     print_step 6 11 "Prepare Root Filesystem"
     
-    if [[ -d "$TARGET_ROOT" ]]; then
-        read -p "Clean build directory? (y/n) [y]: " clean
-        clean=${clean:-y}
-        [[ "$clean" == "y" ]] && rm -rf "$TARGET_ROOT"
-    fi
+    [[ -d "$TARGET_ROOT" ]] && { read -p "Clean build directory? (y/n) [y]: " clean; [[ "${clean:-y}" == "y" ]] && rm -rf "$TARGET_ROOT"; }
     
-    mkdir -p "$TARGET_ROOT"/{bin,sbin,dev,etc,proc,sys,run,tmp,var/log,lib,lib64,usr/{bin,sbin,lib,lib64}}
-    mkdir -p "$TARGET_ROOT"/etc/airride/services
-    mkdir -p "$TARGET_ROOT"/{home/user,root}
-    
+    mkdir -p "$TARGET_ROOT"/{bin,sbin,dev,etc/airride/services,proc,sys,run,tmp,var/{log,run},lib,lib64,usr/{bin,sbin,lib,lib64,share},home/user,root}
     chmod 1777 "$TARGET_ROOT/tmp"
     chmod 700 "$TARGET_ROOT/root"
-    
     print_success "Directory structure created"
-    COMPLETED_STEPS[builddir]=1
 }
 
 install_components() {
@@ -739,37 +357,33 @@ install_components() {
     
     mkdir -p "$TARGET_ROOT/boot"
     cp "$KERNEL_DIR/arch/x86/boot/bzImage" "$TARGET_ROOT/boot/vmlinuz-galactica"
-    [[ -f "$KERNEL_DIR/System.map" ]] && cp "$KERNEL_DIR/System.map" "$TARGET_ROOT/boot/"
-    [[ -f "$KERNEL_DIR/.config" ]] && cp "$KERNEL_DIR/.config" "$TARGET_ROOT/boot/config-galactica"
-    [[ -f "kernel-version.txt" ]] && cp kernel-version.txt "$TARGET_ROOT/boot/.kernel-version"
+    echo "$KERNEL_VERSION" > "$TARGET_ROOT/boot/.kernel-version"
     
-    cp "$POYO_DIR/poyo" "$TARGET_ROOT/sbin/poyo"
-    chmod 755 "$TARGET_ROOT/sbin/poyo"
-    
-    cp "$AIRRIDE_DIR/Init/build/airride" "$TARGET_ROOT/sbin/airride"
-    chmod 755 "$TARGET_ROOT/sbin/airride"
+    cp "$POYO_DIR/poyo" "$TARGET_ROOT/sbin/poyo" && chmod 755 "$TARGET_ROOT/sbin/poyo"
+    cp "$AIRRIDE_DIR/Init/build/airride" "$TARGET_ROOT/sbin/airride" && chmod 755 "$TARGET_ROOT/sbin/airride"
     ln -sf airride "$TARGET_ROOT/sbin/init"
-    
-    cp "$AIRRIDE_DIR/Ctl/build/airridectl" "$TARGET_ROOT/usr/bin/airridectl"
-    chmod 755 "$TARGET_ROOT/usr/bin/airridectl"
-    
-    cp "$DREAMLAND_DIR/build/dreamland" "$TARGET_ROOT/usr/bin/dreamland"
-    chmod 755 "$TARGET_ROOT/usr/bin/dreamland"
+    cp "$AIRRIDE_DIR/Ctl/build/airridectl" "$TARGET_ROOT/usr/bin/airridectl" && chmod 755 "$TARGET_ROOT/usr/bin/airridectl"
+    cp "$DREAMLAND_DIR/build/dreamland" "$TARGET_ROOT/usr/bin/dreamland" && chmod 755 "$TARGET_ROOT/usr/bin/dreamland"
     ln -sf dreamland "$TARGET_ROOT/usr/bin/dl"
     
     print_success "Components installed"
-    COMPLETED_STEPS[install]=1
 }
 
 install_essentials() {
     print_step 8 11 "Install Busybox and Libraries"
     
-    cp /bin/busybox "$TARGET_ROOT/bin/"
-    chmod +x "$TARGET_ROOT/bin/busybox"
+    cp /bin/busybox "$TARGET_ROOT/bin/" && chmod +x "$TARGET_ROOT/bin/busybox"
     
     cd "$TARGET_ROOT/bin"
-    for cmd in sh ash ls cat echo pwd mkdir rm cp mv ln chmod grep sed awk ps kill sleep touch; do
+    for cmd in sh ash ls cat echo pwd mkdir rm cp mv ln chmod chown grep sed awk ps kill sleep touch date mount umount ip ifconfig route ping hostname uname dmesg; do
         ln -sf busybox "$cmd" 2>/dev/null || true
+    done
+    cd - > /dev/null
+    
+    # Also add network tools to sbin
+    cd "$TARGET_ROOT/sbin"
+    for cmd in ifconfig route ip; do
+        ln -sf ../bin/busybox "$cmd" 2>/dev/null || true
     done
     cd - > /dev/null
     
@@ -779,38 +393,46 @@ install_essentials() {
         local binary=$1
         [[ ! -f "$binary" ]] && return
         ldd "$binary" 2>/dev/null | grep -o '/[^ ]*' | while read lib; do
-            if [[ -f "$lib" && ! -f "$TARGET_ROOT$lib" ]]; then
-                mkdir -p "$TARGET_ROOT$(dirname $lib)"
-                cp "$lib" "$TARGET_ROOT$lib" 2>/dev/null || true
-            fi
+            [[ -f "$lib" && ! -f "$TARGET_ROOT$lib" ]] && { mkdir -p "$TARGET_ROOT$(dirname $lib)"; cp "$lib" "$TARGET_ROOT$lib" 2>/dev/null || true; }
         done
     }
     
-    for binary in "$TARGET_ROOT/sbin/airride" "$TARGET_ROOT/sbin/poyo" \
-                  "$TARGET_ROOT/usr/bin/airridectl" "$TARGET_ROOT/usr/bin/dreamland"; do
+    for binary in "$TARGET_ROOT/sbin/airride" "$TARGET_ROOT/sbin/poyo" "$TARGET_ROOT/usr/bin/airridectl" "$TARGET_ROOT/usr/bin/dreamland"; do
         copy_libs "$binary"
     done
     
-    # Copy critical libs
-    for lib in libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 libcrypt.so.1 libgcc_s.so.1 libstdc++.so.6; do
+    for lib in libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 libcrypt.so.1 libgcc_s.so.1 libstdc++.so.6 libresolv.so.2 libnss_dns.so.2 libnss_files.so.2; do
         LIBPATH=$(find /lib* /usr/lib* -name "$lib" 2>/dev/null | head -1)
-        if [[ -n "$LIBPATH" ]]; then
-            mkdir -p "$TARGET_ROOT$(dirname $LIBPATH)"
-            cp "$LIBPATH" "$TARGET_ROOT$(dirname $LIBPATH)/" 2>/dev/null || true
-        fi
+        [[ -n "$LIBPATH" ]] && { mkdir -p "$TARGET_ROOT$(dirname $LIBPATH)"; cp "$LIBPATH" "$TARGET_ROOT$(dirname $LIBPATH)/" 2>/dev/null || true; }
     done
     
-    # Copy dynamic linker
     for linker in ld-linux-x86-64.so.2 ld-linux.so.2; do
         LINKER=$(find /lib* -name "$linker" 2>/dev/null | head -1)
-        if [[ -n "$LINKER" ]]; then
-            mkdir -p "$TARGET_ROOT$(dirname $LINKER)"
-            cp "$LINKER" "$TARGET_ROOT$(dirname $LINKER)/"
-        fi
+        [[ -n "$LINKER" ]] && { mkdir -p "$TARGET_ROOT$(dirname $LINKER)"; cp "$LINKER" "$TARGET_ROOT$(dirname $LINKER)/"; }
     done
     
+    # Install static curl for HTTPS support (BusyBox wget is HTTP-only)
+    print_info "Installing curl with SSL support..."
+    CURL_URL="https://github.com/moparisthebest/static-curl/releases/download/v8.5.0/curl-amd64"
+    if curl -sL -o "$TARGET_ROOT/usr/bin/curl" "$CURL_URL" 2>/dev/null || wget -qO "$TARGET_ROOT/usr/bin/curl" "$CURL_URL" 2>/dev/null; then
+        chmod 755 "$TARGET_ROOT/usr/bin/curl"
+        print_info "curl installed"
+    else
+        print_info "Warning: Could not download static curl"
+    fi
+    
+    # Install CA certificates for SSL
+    mkdir -p "$TARGET_ROOT/etc/ssl/certs"
+    if [[ -f /etc/ssl/certs/ca-certificates.crt ]]; then
+        cp /etc/ssl/certs/ca-certificates.crt "$TARGET_ROOT/etc/ssl/certs/"
+    elif [[ -f /etc/pki/tls/certs/ca-bundle.crt ]]; then
+        cp /etc/pki/tls/certs/ca-bundle.crt "$TARGET_ROOT/etc/ssl/certs/ca-certificates.crt"
+    else
+        curl -sL -o "$TARGET_ROOT/etc/ssl/certs/ca-certificates.crt" "https://curl.se/ca/cacert.pem" 2>/dev/null || \
+        wget -qO "$TARGET_ROOT/etc/ssl/certs/ca-certificates.crt" "https://curl.se/ca/cacert.pem" 2>/dev/null || true
+    fi
+    
     print_success "Essentials installed"
-    COMPLETED_STEPS[essentials]=1
 }
 
 create_system_files() {
@@ -819,136 +441,192 @@ create_system_files() {
     cd "$TARGET_ROOT/dev"
     sudo mknod -m 666 null c 1 3 2>/dev/null || true
     sudo mknod -m 666 zero c 1 5 2>/dev/null || true
+    sudo mknod -m 666 random c 1 8 2>/dev/null || true
+    sudo mknod -m 666 urandom c 1 9 2>/dev/null || true
     sudo mknod -m 600 console c 5 1 2>/dev/null || true
     sudo mknod -m 666 tty c 5 0 2>/dev/null || true
+    sudo mknod -m 620 tty0 c 4 0 2>/dev/null || true
+    sudo mknod -m 660 ttyS0 c 4 64 2>/dev/null || true
     cd - > /dev/null
     
     cat > "$TARGET_ROOT/etc/passwd" << 'EOF'
 root:x:0:0:root:/root:/bin/sh
+nobody:x:65534:65534:nobody:/:/bin/false
 EOF
     
     cat > "$TARGET_ROOT/etc/group" << 'EOF'
 root:x:0:
+tty:x:5:
+nogroup:x:65534:
 EOF
     
     cat > "$TARGET_ROOT/etc/shadow" << 'EOF'
-root:$6$galactica$K9p3vXJ5qZ8mH4xL2nY7.wR9tE1sC8bA6fD5gH3jK2lM9nP0qR1sT2uV3wX4yZ5aB6cD7eF8gH9iJ0kL1mN2oP3:19000:0:99999:7:::
+root:$6$galactica$sHT7YRVFzj/tBeTjD.NeZJJC2E0ng48fqcdNWT3IUDHcQyQ5N2wNXlOXYtu4AGjzyuFgslWdfr271XYzfIeLG.:19000:0:99999:7:::
 EOF
     chmod 600 "$TARGET_ROOT/etc/shadow"
     
     echo "galactica" > "$TARGET_ROOT/etc/hostname"
     
+    cat > "$TARGET_ROOT/etc/hosts" << 'EOF'
+127.0.0.1   localhost galactica
+::1         localhost
+EOF
+    
+    cat > "$TARGET_ROOT/etc/resolv.conf" << 'EOF'
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+EOF
+    
+    cat > "$TARGET_ROOT/etc/nsswitch.conf" << 'EOF'
+passwd:     files
+group:      files
+shadow:     files
+hosts:      files dns
+networks:   files
+protocols:  files
+services:   files
+EOF
+    
+    # Service files with autostart
     cat > "$TARGET_ROOT/etc/airride/services/getty.service" << 'EOF'
+
 [Service]
 name=getty
-description=Poyo Login
+description=Poyo Login Terminal
 type=simple
 exec_start=/sbin/poyo
+autostart=true
 restart=always
 restart_delay=1
+clear_screen=true
+foreground=true
+
+[Dependencies]
+after=network
+
 EOF
+    
+    cat > "$TARGET_ROOT/etc/airride/services/network.service" << 'EOF'
+
+[Service]
+name=network
+description=Network Configuration
+type=oneshot
+exec_start=/sbin/network-setup
+autostart=true
+parallel=true
+
+[Dependencies]
+
+EOF
+    
+    # Network setup script
+    cat > "$TARGET_ROOT/sbin/network-setup" << 'EOFNET'
+
+#!/bin/sh
+# Network setup script for Galactica
+
+LOG="/var/log/airride/network.log"
+mkdir -p /var/log/airride
+mkdir -p /usr/share/udhcpc
+echo "=== Network Setup $(date) ===" >> $LOG 2>&1
+
+# Install udhcpc script if not present
+if [ ! -f /usr/share/udhcpc/default.script ]; then
+    echo "Installing udhcpc script..." >> $LOG 2>&1
+    cat > /usr/share/udhcpc/default.script << 'EOFSCRIPT'
+#!/bin/sh
+RESOLV_CONF="/etc/resolv.conf"
+case "$1" in
+    deconfig)
+        ip addr flush dev "$interface" 2>/dev/null
+        ip link set "$interface" up
+        ;;
+    bound|renew)
+        ip addr flush dev "$interface" 2>/dev/null
+        case "$subnet" in
+            255.255.255.0)   PREFIX=24 ;;
+            255.255.0.0)     PREFIX=16 ;;
+            255.0.0.0)       PREFIX=8 ;;
+            *)               PREFIX=24 ;;
+        esac
+        ip addr add "$ip/$PREFIX" dev "$interface"
+        if [ -n "$router" ]; then
+            while ip route del default 2>/dev/null; do :; done
+            for gw in $router; do
+                ip route add default via "$gw" dev "$interface"
+                break
+            done
+        fi
+        if [ -n "$dns" ]; then
+            echo "# Generated by udhcpc" > "$RESOLV_CONF"
+            for ns in $dns; do
+                echo "nameserver $ns" >> "$RESOLV_CONF"
+            done
+        fi
+        echo "nameserver 8.8.8.8" >> "$RESOLV_CONF"
+        ;;
+esac
+exit 0
+EOFSCRIPT
+    chmod +x /usr/share/udhcpc/default.script
+fi
+
+# Bring up loopback
+ip link set lo up 2>> $LOG
+
+# Find network interface
+IFACE=""
+for iface in eth0 ens3 enp0s3 enp0s2; do
+    if [ -e "/sys/class/net/$iface" ]; then
+        IFACE="$iface"
+        break
+    fi
+done
+
+if [ -z "$IFACE" ]; then
+    echo "No network interface found" >> $LOG
+    exit 1
+fi
+
+echo "Interface: $IFACE" >> $LOG 2>&1
+
+# Bring up interface
+ip link set "$IFACE" up 2>> $LOG
+sleep 1
+
+# Run DHCP with the script
+DHCP_OK=0
+if command -v udhcpc >/dev/null 2>&1; then
+    echo "Running udhcpc..." >> $LOG 2>&1
+    udhcpc -i "$IFACE" -s /usr/share/udhcpc/default.script -n -q -t 5 -T 3 >> $LOG 2>&1 && DHCP_OK=1
+fi
+
+# Fallback to static config if DHCP failed
+if [ "$DHCP_OK" = "0" ]; then
+    echo "DHCP failed, using static config" >> $LOG 2>&1
+    ip addr add 10.0.2.15/24 dev "$IFACE" 2>> $LOG
+    ip route add default via 10.0.2.2 2>> $LOG
+    cat > /etc/resolv.conf << EOF
+nameserver 10.0.2.3
+nameserver 8.8.8.8
+EOF
+fi
+
+# Log final config
+echo "=== Final Configuration ===" >> $LOG 2>&1
+ip addr show "$IFACE" >> $LOG 2>&1
+ip route >> $LOG 2>&1
+cat /etc/resolv.conf >> $LOG 2>&1
+EOFNET
+    chmod +x "$TARGET_ROOT/sbin/network-setup"
     
     cat > "$TARGET_ROOT/etc/motd" << 'EOF'
 Welcome to Galactica Linux!
 Default login: root / galactica
 EOF
     
-    # PAM Configuration (if Poyo was built with PAM)
-    if [[ "$USE_PAM" == "true" ]] && [[ -f /usr/include/security/pam_appl.h ]]; then
-        print_info "Setting up PAM configuration..."
-        
-        # Create PAM directories
-        mkdir -p "$TARGET_ROOT/etc/pam.d"
-        mkdir -p "$TARGET_ROOT/usr/lib/security"
-        
-        # Create PAM configuration for login
-        cat > "$TARGET_ROOT/etc/pam.d/login" << 'EOFPAM'
-#%PAM-1.0
-# PAM configuration for Poyo login
-
-# Authentication
-auth       required     pam_env.so
-auth       sufficient   pam_unix.so nullok try_first_pass
-auth       required     pam_deny.so
-
-# Account management  
-account    required     pam_unix.so
-account    required     pam_permit.so
-
-# Password management
-password   required     pam_unix.so nullok sha512
-password   required     pam_permit.so
-
-# Session management
-session    required     pam_unix.so
-session    optional     pam_lastlog.so
-session    required     pam_env.so
-EOFPAM
-        
-        # Create symlinks for other PAM services
-        ln -sf login "$TARGET_ROOT/etc/pam.d/poyo"
-        ln -sf login "$TARGET_ROOT/etc/pam.d/system-auth"
-        
-        # Create other required PAM configs
-        cat > "$TARGET_ROOT/etc/pam.d/other" << 'EOFOTHER'
-#%PAM-1.0
-auth       required     pam_deny.so
-account    required     pam_deny.so
-password   required     pam_deny.so
-session    required     pam_deny.so
-EOFOTHER
-        
-        cat > "$TARGET_ROOT/etc/pam.conf" << 'EOFCONF'
-# PAM configuration file
-EOFCONF
-        
-        cat > "$TARGET_ROOT/etc/environment" << 'EOFENV'
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-EOFENV
-        
-        print_info "Copying 64-bit PAM modules..."
-        
-        # Copy 64-bit PAM modules from host (Arch Linux location)
-        local PAM_SOURCE="/usr/lib/security"
-        local MODULE_COUNT=0
-        
-        if [[ -d "$PAM_SOURCE" ]]; then
-            for module in "$PAM_SOURCE"/pam_*.so; do
-                if [[ -f "$module" ]]; then
-                    # Only copy 64-bit modules
-                    if file "$module" | grep -q "64-bit"; then
-                        cp "$module" "$TARGET_ROOT/usr/lib/security/"
-                        MODULE_COUNT=$((MODULE_COUNT + 1))
-                    fi
-                fi
-            done
-            print_info "Copied $MODULE_COUNT PAM modules (64-bit only)"
-        else
-            print_warning "PAM modules not found at $PAM_SOURCE"
-        fi
-        
-        print_info "Copying 64-bit PAM libraries..."
-        
-        # Copy 64-bit PAM libraries
-        local LIB_COUNT=0
-        for lib_pattern in "libpam.so*" "libpam_misc.so*"; do
-            for lib in /usr/lib/$lib_pattern; do
-                if [[ -f "$lib" ]]; then
-                    # Only copy 64-bit libraries
-                    if file "$lib" | grep -q "64-bit"; then
-                        cp "$lib" "$TARGET_ROOT/usr/lib/"
-                        LIB_COUNT=$((LIB_COUNT + 1))
-                    fi
-                fi
-            done
-        done
-        print_info "Copied $LIB_COUNT PAM libraries (64-bit only)"
-        
-        print_success "PAM support fully configured"
-    fi
-    
     print_success "System files created"
-    COMPLETED_STEPS[sysfiles]=1
 }
 
 create_rootfs() {
@@ -966,7 +644,6 @@ create_rootfs() {
     rmdir mnt_tmp
     
     print_success "Root filesystem created"
-    COMPLETED_STEPS[rootfs]=1
 }
 
 create_launch_scripts() {
@@ -974,33 +651,23 @@ create_launch_scripts() {
     
     cat > run-galactica.sh << 'EOFSCRIPT'
 #!/bin/bash
-# Enhanced Galactica launcher with debug modes
-
 KERNEL="galactica-build/boot/vmlinuz-galactica"
 ROOTFS="galactica-rootfs.img"
 
-if [[ ! -f "$KERNEL" ]] || [[ ! -f "$ROOTFS" ]]; then
-    echo "Error: Kernel or rootfs not found!"
-    echo "Kernel: $KERNEL"
-    echo "Rootfs: $ROOTFS"
-    exit 1
-fi
+[[ ! -f "$KERNEL" || ! -f "$ROOTFS" ]] && { echo "Error: Kernel or rootfs not found!"; exit 1; }
 
 echo "=== Galactica Boot Menu ==="
 echo ""
-echo "Choose boot mode:"
+echo "  1) Normal boot (with networking)"
+echo "  2) Debug boot (verbose)"
+echo "  3) Emergency shell"
+echo "  4) No networking"
 echo ""
-echo "  1) Normal boot (AirRide init)"
-echo "  2) Debug boot (verbose kernel output)"
-echo "  3) Emergency shell (bypass AirRide)"
-echo "  4) Single user mode (skip services)"
-echo "  5) Init debug (show what init does)"
-echo ""
-read -p "Select mode (1-5) [1]: " mode
+read -p "Select (1-4) [1]: " mode
 mode=${mode:-1}
 
-# Base QEMU command
-QEMU_CMD="qemu-system-x86_64 \
+# Base QEMU command - ALWAYS include networking
+QEMU_BASE="qemu-system-x86_64 \
     -kernel $KERNEL \
     -drive file=$ROOTFS,format=raw,if=virtio \
     -m 512M \
@@ -1008,86 +675,47 @@ QEMU_CMD="qemu-system-x86_64 \
     -nographic \
     -serial mon:stdio"
 
+# User-mode networking with port forwarding
+# - Guest can access internet through host
+# - SSH to guest: ssh -p 2222 root@localhost
+QEMU_NET="-netdev user,id=net0,hostfwd=tcp::2222-:22 -device e1000,netdev=net0"
+
 case $mode in
-    1)
-        echo ""
-        echo "Starting normal boot..."
+    1) 
+        echo "Starting with networking..."
+        echo "SSH available at: ssh -p 2222 root@localhost"
         echo "Press Ctrl+A then X to exit"
-        echo ""
-        $QEMU_CMD \
-            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init"
+        $QEMU_BASE $QEMU_NET -append "root=/dev/vda rw console=ttyS0 init=/sbin/init quiet"
         ;;
-    
-    2)
-        echo ""
-        echo "Starting debug boot with verbose output..."
-        echo "Watch for errors in the kernel messages"
-        echo "Press Ctrl+A then X to exit"
-        echo ""
-        $QEMU_CMD \
-            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init debug loglevel=7 earlyprintk=serial"
+    2) 
+        echo "Debug mode with networking..."
+        $QEMU_BASE $QEMU_NET -append "root=/dev/vda rw console=ttyS0 init=/sbin/init debug loglevel=7"
         ;;
-    
-    3)
-        echo ""
-        echo "Starting emergency shell..."
-        echo "This bypasses AirRide and gives you /bin/sh"
-        echo "Press Ctrl+A then X to exit"
-        echo ""
-        $QEMU_CMD \
-            -append "root=/dev/vda rw console=ttyS0 init=/bin/sh"
+    3) 
+        echo "Emergency shell..."
+        $QEMU_BASE $QEMU_NET -append "root=/dev/vda rw console=ttyS0 init=/bin/sh"
         ;;
-    
     4)
-        echo ""
-        echo "Starting single user mode..."
-        echo "This starts AirRide but may skip services"
-        echo "Press Ctrl+A then X to exit"
-        echo ""
-        $QEMU_CMD \
-            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init single"
-        ;;
-    
-    5)
-        echo ""
-        echo "Starting with init debugging..."
-        echo "This shows what the init system is doing"
-        echo "Press Ctrl+A then X to exit"
-        echo ""
-        $QEMU_CMD \
-            -append "root=/dev/vda rw console=ttyS0 init=/sbin/init debug loglevel=7"
-        ;;
-    
-    *)
-        echo "Invalid selection"
-        exit 1
+        echo "No networking..."
+        $QEMU_BASE -append "root=/dev/vda rw console=ttyS0 init=/sbin/init"
         ;;
 esac
 EOFSCRIPT
     chmod +x run-galactica.sh
     
     print_success "Launch scripts created"
-    COMPLETED_STEPS[scripts]=1
 }
-
-# ============================================
-# Main
-# ============================================
 
 main() {
     print_banner
     
-    echo "This script builds Galactica Linux with:"
+    echo "This builds Galactica with:"
+    echo "  ✓ Full networking stack (TCP/IP, DHCP, DNS)"
+    echo "  ✓ Auto-starting services (getty, network)"
+    echo "  ✓ Firewall support (iptables/nftables)"
     echo ""
-    echo "  ✓ GCC 13+ C23 compatibility fix"
-    echo "  ✓ Linux kernel ${KERNEL_VERSION} with VIRTIO"
-    echo "  ✓ Complete userspace components"
-    echo ""
-    echo "Build time: ~10-20 minutes (first build)"
-    echo ""
-    read -p "Continue? (y/n) [y]: " continue
-    continue=${continue:-y}
-    [[ "$continue" != "y" ]] && exit 0
+    read -p "Continue? (y/n) [y]: " cont
+    [[ "${cont:-y}" != "y" ]] && exit 0
     
     preflight_checks || exit 1
     build_kernel || exit 1
@@ -1102,12 +730,16 @@ main() {
     create_rootfs || exit 1
     create_launch_scripts
     
-    clear
     print_banner
     echo -e "${GREEN}${BOLD}=== Build Complete! ===${NC}"
     echo ""
-    echo "To boot: ${YELLOW}./run-galactica.sh${NC}"
+    echo "Boot: ${YELLOW}./run-galactica.sh${NC}"
     echo "Login: ${CYAN}root${NC} / ${CYAN}galactica${NC}"
+    echo ""
+    echo "Features:"
+    echo "  • Login screen auto-starts on boot"
+    echo "  • Network auto-configures via DHCP"
+    echo "  • Use mode 4 for networking in QEMU"
     echo ""
 }
 

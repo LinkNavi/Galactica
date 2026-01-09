@@ -46,6 +46,11 @@ static size_t write_callback(void* contents, size_t size, size_t nmemb, std::str
     return size * nmemb;
 }
 
+// Callback for curl to write data to file
+static size_t write_file_callback(void* contents, size_t size, size_t nmemb, FILE* fp) {
+    return fwrite(contents, size, nmemb, fp);
+}
+
 class Dreamland {
 private:
     std::string cache_dir;
@@ -131,6 +136,7 @@ private:
     bool download_url(const std::string& url, std::string& output) {
         CURL* curl = curl_easy_init();
         if (!curl) {
+            print_error("Failed to initialize curl");
             return false;
         }
 
@@ -140,7 +146,8 @@ private:
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "Dreamland/1.0");
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
         
         CURLcode res = curl_easy_perform(curl);
         long response_code;
@@ -148,13 +155,76 @@ private:
         curl_easy_cleanup(curl);
 
         if (res != CURLE_OK) {
-            print_debug("CURL error: " + std::string(curl_easy_strerror(res)));
+            print_error("Download failed: " + std::string(curl_easy_strerror(res)));
+            return false;
         }
 
-        return (res == CURLE_OK && response_code == 200);
+        if (response_code != 200) {
+            print_error("HTTP error: " + std::to_string(response_code));
+            return false;
+        }
+
+        return true;
     }
 
-    // Download file from URL to file
+    // Download file from URL directly to file (for large files)
+    bool download_to_file(const std::string& url, const std::string& filepath) {
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            print_error("Failed to initialize curl");
+            return false;
+        }
+
+        fs::create_directories(fs::path(filepath).parent_path());
+
+        FILE* fp = fopen(filepath.c_str(), "wb");
+        if (!fp) {
+            print_error("Cannot open file for writing: " + filepath);
+            curl_easy_cleanup(curl);
+            return false;
+        }
+
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Dreamland/1.0");
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);  // 5 min for large files
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+        
+        // Progress indicator
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        
+        CURLcode res = curl_easy_perform(curl);
+        long response_code;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+        
+        fclose(fp);
+        curl_easy_cleanup(curl);
+
+        if (res != CURLE_OK) {
+            print_error("Download failed: " + std::string(curl_easy_strerror(res)));
+            fs::remove(filepath);
+            return false;
+        }
+
+        if (response_code != 200) {
+            print_error("HTTP error: " + std::to_string(response_code));
+            fs::remove(filepath);
+            return false;
+        }
+
+        // Verify file was created and has content
+        if (!fs::exists(filepath) || fs::file_size(filepath) == 0) {
+            print_error("Downloaded file is empty or missing");
+            return false;
+        }
+
+        return true;
+    }
+
+    // Download file from URL to file (string version for small files)
     bool download_file(const std::string& url, const std::string& filepath) {
         std::string content;
         if (!download_url(url, content)) {
@@ -424,46 +494,189 @@ private:
         return WEXITSTATUS(status);
     }
 
-    // Download source code
+    // Get file extension from URL
+    std::string get_url_extension(const std::string& url) {
+        // Handle URLs like .tar.gz, .tar.bz2, .tar.xz
+        if (url.find(".tar.gz") != std::string::npos || url.find(".tgz") != std::string::npos) {
+            return ".tar.gz";
+        }
+        if (url.find(".tar.bz2") != std::string::npos) {
+            return ".tar.bz2";
+        }
+        if (url.find(".tar.xz") != std::string::npos) {
+            return ".tar.xz";
+        }
+        if (url.find(".zip") != std::string::npos) {
+            return ".zip";
+        }
+        // Default
+        size_t pos = url.find_last_of('.');
+        if (pos != std::string::npos) {
+            return url.substr(pos);
+        }
+        return ".tar.gz";
+    }
+
+    // Download source code using libcurl (not wget/curl CLI)
     bool download_source(const Package& pkg, const std::string& dest) {
         print_status("Downloading " + pkg.name + " source...");
         
-        std::string cmd;
+        // Create destination directory
+        fs::create_directories(dest);
+        
         if (pkg.url.find(".git") != std::string::npos) {
-            cmd = "git clone " + pkg.url + " " + dest;
-        } else {
-            std::string ext = pkg.url.substr(pkg.url.find_last_of('.'));
-            std::string archive = "/tmp/" + pkg.name + ext;
-            
-            cmd = "wget -q -O " + archive + " " + pkg.url;
+            // Git clone
+            std::string cmd = "git clone --depth 1 " + pkg.url + " " + dest + " 2>&1";
             if (execute_command(cmd) != 0) {
-                cmd = "curl -s -L -o " + archive + " " + pkg.url;
-                if (execute_command(cmd) != 0) {
-                    print_error("Failed to download source (tried wget and curl)");
-                    return false;
-                }
-            }
-            
-            if (ext == ".gz" || ext == ".tgz") {
-                cmd = "tar -xzf " + archive + " -C " + dest + " --strip-components=1 2>/dev/null";
-            } else if (ext == ".bz2") {
-                cmd = "tar -xjf " + archive + " -C " + dest + " --strip-components=1 2>/dev/null";
-            } else if (ext == ".xz") {
-                cmd = "tar -xJf " + archive + " -C " + dest + " --strip-components=1 2>/dev/null";
-            } else if (ext == ".zip") {
-                cmd = "unzip -q " + archive + " -d " + dest + " 2>/dev/null";
-            } else {
-                print_error("Unknown archive format: " + ext);
+                print_error("Git clone failed");
                 return false;
             }
+            return true;
         }
         
-        return execute_command(cmd) == 0;
+        // Download archive using libcurl
+        std::string ext = get_url_extension(pkg.url);
+        std::string archive = "/tmp/" + pkg.name + "-" + pkg.version + ext;
+        
+        print_debug("Downloading: " + pkg.url);
+        print_debug("To: " + archive);
+        
+        if (!download_to_file(pkg.url, archive)) {
+            print_error("Failed to download source archive");
+            return false;
+        }
+        
+        // Verify download
+        if (!fs::exists(archive) || fs::file_size(archive) < 100) {
+            print_error("Downloaded archive is empty or too small");
+            return false;
+        }
+        
+        print_status("Extracting " + pkg.name + "...");
+        
+        // Extract based on extension
+        std::string cmd;
+        if (ext == ".tar.gz" || ext == ".tgz") {
+            cmd = "tar -xzf " + archive + " -C " + dest + " --strip-components=1 2>&1";
+        } else if (ext == ".tar.bz2") {
+            cmd = "tar -xjf " + archive + " -C " + dest + " --strip-components=1 2>&1";
+        } else if (ext == ".tar.xz") {
+            cmd = "tar -xJf " + archive + " -C " + dest + " --strip-components=1 2>&1";
+        } else if (ext == ".zip") {
+            cmd = "unzip -q -o " + archive + " -d " + dest + " 2>&1";
+            // Handle single top-level directory in zip
+            // TODO: strip if needed
+        } else {
+            print_error("Unknown archive format: " + ext);
+            return false;
+        }
+        
+        if (execute_command(cmd) != 0) {
+            print_error("Failed to extract archive");
+            print_warning("Archive: " + archive);
+            return false;
+        }
+        
+        // Cleanup archive
+        fs::remove(archive);
+        
+        // Verify extraction
+        bool has_files = false;
+        for (const auto& entry : fs::directory_iterator(dest)) {
+            has_files = true;
+            break;
+        }
+        
+        if (!has_files) {
+            print_error("Extraction produced no files");
+            return false;
+        }
+        
+        print_success("Downloaded and extracted " + pkg.name);
+        return true;
+    }
+
+    // Check if a command exists
+    bool command_exists(const std::string& cmd) {
+        std::string check = "command -v " + cmd + " >/dev/null 2>&1";
+        return execute_command(check) == 0;
+    }
+
+    // Check for required build tools
+    bool check_build_tools(const Package& pkg, const std::string& build_path) {
+        std::vector<std::string> missing;
+        
+        // Always need a C compiler
+        if (!command_exists("gcc") && !command_exists("cc") && !command_exists("clang")) {
+            missing.push_back("gcc (C compiler)");
+        }
+        
+        // Check what build system the package uses
+        bool needs_cmake = false;
+        bool needs_make = false;
+        bool needs_meson = false;
+        bool needs_ninja = false;
+        bool needs_cargo = false;
+        
+        // Check from build script
+        if (!pkg.build_script.empty()) {
+            if (pkg.build_script.find("cmake") != std::string::npos) needs_cmake = true;
+            if (pkg.build_script.find("make") != std::string::npos) needs_make = true;
+            if (pkg.build_script.find("meson") != std::string::npos) needs_meson = true;
+            if (pkg.build_script.find("ninja") != std::string::npos) needs_ninja = true;
+            if (pkg.build_script.find("cargo") != std::string::npos) needs_cargo = true;
+        }
+        
+        // Check from files in build directory
+        if (fs::exists(build_path + "/CMakeLists.txt")) needs_cmake = true;
+        if (fs::exists(build_path + "/Makefile")) needs_make = true;
+        if (fs::exists(build_path + "/configure")) needs_make = true;
+        if (fs::exists(build_path + "/meson.build")) { needs_meson = true; needs_ninja = true; }
+        if (fs::exists(build_path + "/Cargo.toml")) needs_cargo = true;
+        
+        // Check if tools are installed
+        if (needs_cmake && !command_exists("cmake")) {
+            missing.push_back("cmake");
+        }
+        if (needs_make && !command_exists("make")) {
+            missing.push_back("make");
+        }
+        if (needs_meson && !command_exists("meson")) {
+            missing.push_back("meson");
+        }
+        if (needs_ninja && !command_exists("ninja")) {
+            missing.push_back("ninja");
+        }
+        if (needs_cargo && !command_exists("cargo")) {
+            missing.push_back("cargo (Rust)");
+        }
+        
+        if (!missing.empty()) {
+            print_error("Missing required build tools:");
+            for (const auto& tool : missing) {
+                std::cout << "  • " << RED << tool << RESET << "\n";
+            }
+            std::cout << "\n";
+            print_warning("Install build tools first. You need a toolchain with:");
+            std::cout << "  • C/C++ compiler (gcc, g++)\n";
+            std::cout << "  • make\n";
+            std::cout << "  • cmake (for most packages)\n";
+            std::cout << "\nOn the host, add these to your rootfs, or install a\n";
+            std::cout << "bootstrap toolchain package.\n";
+            return false;
+        }
+        
+        return true;
     }
 
     // Build package from source
     bool build_package(const Package& pkg, const std::string& build_path) {
         print_status("Building " + pkg.name + "...");
+        
+        // Check for required build tools BEFORE attempting build
+        if (!check_build_tools(pkg, build_path)) {
+            return false;
+        }
         
         std::string script_path = build_path + "/dreamland_build.sh";
         std::ofstream script(script_path);
@@ -473,30 +686,51 @@ private:
             return false;
         }
         
-        script << "#!/bin/bash\n";
+        // Use /bin/sh instead of bash (more portable)
+        script << "#!/bin/sh\n";
         script << "set -e\n\n";
-        script << "cd " << build_path << "\n\n";
+        script << "cd \"" << build_path << "\"\n\n";
         
+        // Export build flags
         for (const auto& [key, value] : pkg.build_flags) {
             script << "export " << key << "=\"" << value << "\"\n";
         }
         script << "\n";
         
+        // Set standard build variables
+        script << "# Standard build environment\n";
+        script << "export PREFIX=\"/usr\"\n";
+        script << "export DESTDIR=\"\"\n";
+        script << "NPROC=$(nproc 2>/dev/null || echo 2)\n";
+        script << "\n";
+        
         if (pkg.build_script.empty()) {
+            // Default build process
             script << "# Default build process\n";
             script << "if [ -f configure ]; then\n";
             script << "    ./configure --prefix=/usr\n";
-            script << "    make -j$(nproc)\n";
+            script << "    make -j$NPROC\n";
             script << "    make install\n";
             script << "elif [ -f CMakeLists.txt ]; then\n";
-            script << "    cmake -B build -DCMAKE_INSTALL_PREFIX=/usr\n";
-            script << "    cmake --build build -j$(nproc)\n";
-            script << "    cmake --install build\n";
-            script << "elif [ -f Makefile ]; then\n";
-            script << "    make -j$(nproc)\n";
+            script << "    mkdir -p build && cd build\n";
+            script << "    cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release\n";
+            script << "    make -j$NPROC\n";
             script << "    make install\n";
+            script << "elif [ -f meson.build ]; then\n";
+            script << "    meson setup build --prefix=/usr\n";
+            script << "    ninja -C build\n";
+            script << "    ninja -C build install\n";
+            script << "elif [ -f Makefile ]; then\n";
+            script << "    make -j$NPROC\n";
+            script << "    make install PREFIX=/usr\n";
+            script << "elif [ -f setup.py ]; then\n";
+            script << "    python3 setup.py install --prefix=/usr\n";
+            script << "elif [ -f Cargo.toml ]; then\n";
+            script << "    cargo build --release\n";
+            script << "    cargo install --path . --root /usr\n";
             script << "else\n";
             script << "    echo 'No build system detected'\n";
+            script << "    ls -la\n";
             script << "    exit 1\n";
             script << "fi\n";
         } else {
@@ -514,14 +748,22 @@ private:
             return false;
         }
         
-        int result = execute_command("bash " + script_path + " 2>&1 | tee " + build_path + "/build.log");
+        // Run with /bin/sh, capture exit code properly
+        std::string log_file = build_path + "/build.log";
+        std::string cmd = "/bin/sh " + script_path + " > " + log_file + " 2>&1";
+        
+        int result = execute_command(cmd);
+        
+        // Show build output
+        std::string cat_cmd = "cat " + log_file;
+        execute_command(cat_cmd);
         
         if (result == 0) {
             print_success("Built " + pkg.name + " successfully");
             return true;
         } else {
-            print_error("Failed to build " + pkg.name);
-            print_warning("Check build log: " + build_path + "/build.log");
+            print_error("Build failed for " + pkg.name + " (exit code: " + std::to_string(result) + ")");
+            print_warning("Build log: " + log_file);
             return false;
         }
     }
@@ -606,6 +848,7 @@ private:
         // Create build directory
         std::string build_path = build_dir + "/" + pkg_name;
         try {
+            fs::remove_all(build_path);  // Clean previous attempts
             fs::create_directories(build_path);
         } catch (const fs::filesystem_error& e) {
             print_error("Cannot create build directory: " + std::string(e.what()));
@@ -1321,4 +1564,3 @@ int main(int argc, char* argv[]) {
     }
 
 }
-

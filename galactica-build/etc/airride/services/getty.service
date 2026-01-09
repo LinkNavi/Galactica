@@ -1,7 +1,15 @@
+
 [Service]
 name=getty
-description=Poyo Login
+description=Poyo Login Terminal
 type=simple
 exec_start=/sbin/poyo
+autostart=true
 restart=always
 restart_delay=1
+clear_screen=true
+foreground=true
+
+[Dependencies]
+after=network
+
