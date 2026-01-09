@@ -44,10 +44,12 @@ enum class PackageSource {
   ARCH_BINARY, // Arch Linux binary packages (for deps)
   UNKNOWN
 };
+
 const std::vector<std::string> BASE_DEVEL_PACKAGES = {
     "gcc",        "gcc-libs", "binutils", "make",    "autoconf", "automake",
     "pkg-config", "bison",    "flex",     "grep",    "sed",      "gawk",
     "patch",      "libtool",  "m4",       "texinfo", "gettext"};
+
 // Unified package structure
 struct Package {
   std::string name;
@@ -59,6 +61,7 @@ struct Package {
   std::map<std::string, std::string> build_flags;
   std::string build_script;
   bool installed = false;
+  bool deps_resolved = false; // Track if we've fetched .PKGINFO
 
   // Source info
   PackageSource source = PackageSource::UNKNOWN;
@@ -88,6 +91,7 @@ private:
   std::string pkg_index;
   std::string pkg_cache_dir;
   std::string db_cache_dir;
+  bool debug_mode = false;
 
   std::map<std::string, Package> packages; // All packages
   std::map<std::string, Package> installed;
@@ -120,6 +124,12 @@ private:
     installed_db = base_data + "/dreamland/installed.db";
     pkg_db = base_data + "/dreamland/packages.db";
 
+    // Check for debug mode
+    const char *debug_env = getenv("DREAMLAND_DEBUG");
+    if (debug_env && std::string(debug_env) == "1") {
+      debug_mode = true;
+    }
+
     try {
       fs::create_directories(cache_dir);
       fs::create_directories(build_dir);
@@ -144,7 +154,19 @@ private:
       if (pkg.source == PackageSource::ARCH_BINARY) {
         file << "ARCH|" << pkg.name << "|" << pkg.version << "|" << pkg.repo
              << "|" << pkg.filename << "|" << pkg.size << "|" << pkg.description
-             << "\n";
+             << "|" << (pkg.deps_resolved ? "1" : "0");
+        
+        // Save dependencies if resolved
+        if (pkg.deps_resolved && !pkg.dependencies.empty()) {
+          file << "|";
+          for (size_t i = 0; i < pkg.dependencies.size(); i++) {
+            file << pkg.dependencies[i];
+            if (i < pkg.dependencies.size() - 1) {
+              file << ",";
+            }
+          }
+        }
+        file << "\n";
       }
     }
 
@@ -164,7 +186,7 @@ private:
 
     while (std::getline(file, line)) {
       std::istringstream iss(line);
-      std::string type, name, version, repo, filename, size_str, desc;
+      std::string type, name, version, repo, filename, size_str, desc, deps_resolved_str, deps_str;
 
       if (!std::getline(iss, type, '|'))
         continue;
@@ -178,7 +200,11 @@ private:
         continue;
       if (!std::getline(iss, size_str, '|'))
         continue;
-      std::getline(iss, desc);
+      if (!std::getline(iss, desc, '|'))
+        continue;
+      if (!std::getline(iss, deps_resolved_str, '|'))
+        continue;
+      std::getline(iss, deps_str);
 
       if (type == "ARCH") {
         Package pkg;
@@ -193,6 +219,19 @@ private:
         }
         pkg.description = desc;
         pkg.source = PackageSource::ARCH_BINARY;
+        pkg.deps_resolved = (deps_resolved_str == "1");
+        
+        // Parse dependencies if they were saved
+        if (!deps_str.empty()) {
+          std::istringstream deps_stream(deps_str);
+          std::string dep;
+          while (std::getline(deps_stream, dep, ',')) {
+            if (!dep.empty()) {
+              pkg.dependencies.push_back(dep);
+            }
+          }
+        }
+        
         packages[name] = pkg;
         count++;
       }
@@ -227,8 +266,9 @@ private:
   }
 
   void print_debug(const std::string &msg) {
-    // Uncomment for debugging
-    // std::cout << "[DEBUG] " << msg << std::endl;
+    if (debug_mode) {
+      std::cout << "[DEBUG] " << msg << std::endl;
+    }
   }
 
   bool download_url(const std::string &url, std::string &output) {
@@ -404,6 +444,7 @@ private:
 
     if (!pkg.name.empty()) {
       pkg.source = PackageSource::GALACTICA;
+      pkg.deps_resolved = true; // Galactica packages have deps in file
       return true;
     }
     return false;
@@ -460,45 +501,9 @@ private:
     return false;
   }
 
-  // ARCH REPOSITORY
-  bool resolve_arch_dependencies(const std::string &pkg_name,
-                                 std::set<std::string> &to_install) {
-    auto it = packages.find(pkg_name);
-    if (it == packages.end()) {
-      print_debug("Package not in database: " + pkg_name);
-      return true; // Might be provided by system
-    }
-
-    const auto &pkg = it->second;
-
-    // Skip if already installed
-    if (installed.count(pkg_name)) {
-      return true;
-    }
-
-    // Add to install list
-    to_install.insert(pkg_name);
-
-    // Recursively resolve dependencies
-    for (const auto &dep : pkg.dependencies) {
-      // Skip already processed
-      if (to_install.count(dep) || installed.count(dep)) {
-        continue;
-      }
-
-      // Check if it's an Arch package
-      if (packages.count(dep) &&
-          packages[dep].source == PackageSource::ARCH_BINARY) {
-        if (!resolve_arch_dependencies(dep, to_install)) {
-          return false;
-        }
-      }
-    }
-
-    return true;
-  }
+  // ARCH REPOSITORY - Database parsing for package listing only
   bool parse_arch_db(const std::string &db_file, const std::string &repo) {
-    print_status("Parsing Arch " + repo + " database...");
+    print_status("Parsing Arch " + repo + " database (basic info only)...");
 
     std::string extract_dir = db_cache_dir + "/" + repo;
     fs::create_directories(extract_dir);
@@ -523,6 +528,7 @@ private:
       Package pkg;
       pkg.source = PackageSource::ARCH_BINARY;
       pkg.repo = repo;
+      pkg.deps_resolved = false; // Will resolve from .pkg.tar.zst later
 
       std::ifstream desc(desc_file);
       std::string line, section;
@@ -541,7 +547,9 @@ private:
         } else if (section == "VERSION") {
           pkg.version = line;
         } else if (section == "DESC") {
-          pkg.description = line;
+          if (pkg.description.empty()) {
+            pkg.description = line;
+          }
         } else if (section == "FILENAME") {
           pkg.filename = line;
         } else if (section == "CSIZE") {
@@ -549,14 +557,6 @@ private:
             pkg.size = std::stoull(line);
           } catch (...) {
           }
-        } else if (section == "DEPENDS") {
-          // Parse dependency (format: "pkgname>=1.0" or just "pkgname")
-          std::string dep = line;
-          size_t op_pos = dep.find_first_of(">=<");
-          if (op_pos != std::string::npos) {
-            dep = dep.substr(0, op_pos);
-          }
-          pkg.dependencies.push_back(dep);
         }
       }
 
@@ -574,7 +574,7 @@ private:
   }
 
   bool sync_arch_databases() {
-    print_status("Syncing Arch Linux databases (for fallback)...");
+    print_status("Syncing Arch Linux databases (for package discovery)...");
 
     bool success = false;
 
@@ -603,6 +603,158 @@ private:
     }
 
     return success;
+  }
+
+  // Parse .PKGINFO from a .pkg.tar.zst file
+  bool parse_pkginfo_from_archive(const std::string &pkg_file, Package &pkg) {
+    print_debug("Reading .PKGINFO from " + pkg.name);
+    
+    struct archive *a;
+    struct archive_entry *entry;
+    
+    a = archive_read_new();
+    archive_read_support_filter_all(a);
+    archive_read_support_format_all(a);
+    
+    if (archive_read_open_filename(a, pkg_file.c_str(), 10240) != ARCHIVE_OK) {
+      print_debug("Failed to open archive for .PKGINFO reading");
+      archive_read_free(a);
+      return false;
+    }
+    
+    bool found_pkginfo = false;
+    std::string pkginfo_content;
+    
+    // Find and read .PKGINFO file
+    while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+      std::string pathname = archive_entry_pathname(entry);
+      
+      if (pathname == ".PKGINFO") {
+        found_pkginfo = true;
+        size_t size = archive_entry_size(entry);
+        
+        if (size > 0 && size < 1024 * 1024) { // Sanity check: < 1MB
+          std::vector<char> buffer(size);
+          ssize_t bytes_read = archive_read_data(a, buffer.data(), size);
+          
+          if (bytes_read > 0) {
+            pkginfo_content = std::string(buffer.begin(), buffer.begin() + bytes_read);
+          }
+        }
+        break;
+      }
+      
+      archive_read_data_skip(a);
+    }
+    
+    archive_read_close(a);
+    archive_read_free(a);
+    
+    if (!found_pkginfo || pkginfo_content.empty()) {
+      print_debug("No .PKGINFO found in package");
+      return false;
+    }
+    
+    // Parse .PKGINFO content
+    std::istringstream iss(pkginfo_content);
+    std::string line;
+    std::vector<std::string> dependencies;
+    
+    while (std::getline(iss, line)) {
+      // Skip comments and empty lines
+      if (line.empty() || line[0] == '#')
+        continue;
+      
+      // Parse key = value format
+      size_t eq_pos = line.find('=');
+      if (eq_pos == std::string::npos)
+        continue;
+      
+      std::string key = line.substr(0, eq_pos);
+      std::string value = line.substr(eq_pos + 1);
+      
+      // Trim whitespace
+      key.erase(0, key.find_first_not_of(" \t"));
+      key.erase(key.find_last_not_of(" \t") + 1);
+      value.erase(0, value.find_first_not_of(" \t"));
+      value.erase(value.find_last_not_of(" \t") + 1);
+      
+      if (key == "depend") {
+        // Strip version constraints
+        std::string dep = value;
+        size_t op_pos = dep.find_first_of(">=<");
+        if (op_pos != std::string::npos) {
+          dep = dep.substr(0, op_pos);
+        }
+        dependencies.push_back(dep);
+        print_debug("  Dependency: " + dep);
+      }
+    }
+    
+    // Update package dependencies
+    pkg.dependencies = dependencies;
+    pkg.deps_resolved = true;
+    
+    print_debug("Resolved " + std::to_string(dependencies.size()) + 
+               " dependencies from .PKGINFO for " + pkg.name);
+    
+    return true;
+  }
+
+  // Download and parse .PKGINFO to get dependencies
+  bool resolve_arch_package_deps(const std::string &pkg_name) {
+    auto it = packages.find(pkg_name);
+    if (it == packages.end()) {
+      print_debug("Package not found: " + pkg_name);
+      return false;
+    }
+
+    Package &pkg = it->second;
+
+    // Already resolved?
+    if (pkg.deps_resolved && !pkg.dependencies.empty()) {
+      print_debug("Dependencies already resolved for " + pkg_name);
+      return true;
+    }
+
+    // Skip if not an Arch package
+    if (pkg.source != PackageSource::ARCH_BINARY) {
+      return false;
+    }
+
+    print_debug("Resolving dependencies for " + pkg_name + " from .pkg.tar.zst...");
+
+    std::string cached_pkg = pkg_cache_dir + "/" + pkg.filename;
+
+    // Download if not cached
+    if (!fs::exists(cached_pkg)) {
+      print_status("Downloading " + pkg_name + " to read dependencies...");
+      
+      bool downloaded = false;
+      for (const auto &mirror : ARCH_MIRRORS) {
+        std::string pkg_url =
+            mirror + "/" + pkg.repo + "/os/x86_64/" + pkg.filename;
+
+        if (download_to_file(pkg_url, cached_pkg)) {
+          downloaded = true;
+          break;
+        }
+      }
+
+      if (!downloaded) {
+        print_warning("Failed to download package for dependency resolution");
+        return false;
+      }
+    }
+
+    // Parse .PKGINFO
+    if (parse_pkginfo_from_archive(cached_pkg, pkg)) {
+      // Update in packages map
+      packages[pkg_name] = pkg;
+      return true;
+    }
+
+    return false;
   }
 
   bool extract_zst_package(const std::string &pkg_file,
@@ -770,62 +922,85 @@ private:
     return execute_command(check) == 0;
   }
 
-  bool check_build_tools(const Package& pkg, const std::string& build_path) {
+  bool check_build_tools(const Package &pkg, const std::string &build_path) {
     std::vector<std::string> missing;
-    
-    if (!command_exists("gcc") && !command_exists("cc") && !command_exists("clang")) {
-        missing.push_back("gcc (C compiler)");
+
+    if (!command_exists("gcc") && !command_exists("cc") &&
+        !command_exists("clang")) {
+      missing.push_back("gcc (C compiler)");
     }
-    
+
     bool needs_cmake = false;
     bool needs_make = false;
     bool needs_meson = false;
     bool needs_ninja = false;
     bool needs_autoconf = false;
     bool needs_automake = false;
-    
+
     if (!pkg.build_script.empty()) {
-        if (pkg.build_script.find("cmake") != std::string::npos) needs_cmake = true;
-        if (pkg.build_script.find("make") != std::string::npos) needs_make = true;
-        if (pkg.build_script.find("meson") != std::string::npos) needs_meson = true;
-        if (pkg.build_script.find("ninja") != std::string::npos) needs_ninja = true;
-        if (pkg.build_script.find("autoconf") != std::string::npos) needs_autoconf = true;
-        if (pkg.build_script.find("automake") != std::string::npos) needs_automake = true;
-    }
-    
-    if (fs::exists(build_path + "/CMakeLists.txt")) needs_cmake = true;
-    if (fs::exists(build_path + "/Makefile") || fs::exists(build_path + "/Makefile.in")) needs_make = true;
-    if (fs::exists(build_path + "/configure")) needs_make = true;
-    if (fs::exists(build_path + "/configure.ac") || fs::exists(build_path + "/configure.in")) {
-        needs_autoconf = true;
-        needs_automake = true;
+      if (pkg.build_script.find("cmake") != std::string::npos)
+        needs_cmake = true;
+      if (pkg.build_script.find("make") != std::string::npos)
         needs_make = true;
+      if (pkg.build_script.find("meson") != std::string::npos)
+        needs_meson = true;
+      if (pkg.build_script.find("ninja") != std::string::npos)
+        needs_ninja = true;
+      if (pkg.build_script.find("autoconf") != std::string::npos)
+        needs_autoconf = true;
+      if (pkg.build_script.find("automake") != std::string::npos)
+        needs_automake = true;
     }
-    if (fs::exists(build_path + "/meson.build")) { needs_meson = true; needs_ninja = true; }
-    
-    if (needs_cmake && !command_exists("cmake")) missing.push_back("cmake");
-    if (needs_make && !command_exists("make")) missing.push_back("make");
-    if (needs_meson && !command_exists("meson")) missing.push_back("meson");
-    if (needs_ninja && !command_exists("ninja")) missing.push_back("ninja");
-    if (needs_autoconf && !command_exists("autoconf")) missing.push_back("autoconf");
-    if (needs_automake && !command_exists("automake")) missing.push_back("automake");
-    
+
+    if (fs::exists(build_path + "/CMakeLists.txt"))
+      needs_cmake = true;
+    if (fs::exists(build_path + "/Makefile") ||
+        fs::exists(build_path + "/Makefile.in"))
+      needs_make = true;
+    if (fs::exists(build_path + "/configure"))
+      needs_make = true;
+    if (fs::exists(build_path + "/configure.ac") ||
+        fs::exists(build_path + "/configure.in")) {
+      needs_autoconf = true;
+      needs_automake = true;
+      needs_make = true;
+    }
+    if (fs::exists(build_path + "/meson.build")) {
+      needs_meson = true;
+      needs_ninja = true;
+    }
+
+    if (needs_cmake && !command_exists("cmake"))
+      missing.push_back("cmake");
+    if (needs_make && !command_exists("make"))
+      missing.push_back("make");
+    if (needs_meson && !command_exists("meson"))
+      missing.push_back("meson");
+    if (needs_ninja && !command_exists("ninja"))
+      missing.push_back("ninja");
+    if (needs_autoconf && !command_exists("autoconf"))
+      missing.push_back("autoconf");
+    if (needs_automake && !command_exists("automake"))
+      missing.push_back("automake");
+
     if (!missing.empty()) {
-        print_error("Missing required build tools:");
-        for (const auto& tool : missing) {
-            std::cout << "  • " << RED << tool << RESET << "\n";
-        }
-        std::cout << "\nInstall with: " << YELLOW << "dreamland base-devel" << RESET << "\n";
-        std::cout << "Or manually: " << YELLOW << "dreamland install --arch ";
-        for (const auto& tool : missing) {
-            std::cout << tool << " ";
-        }
-        std::cout << RESET << "\n";
-        return false;
+      print_error("Missing required build tools:");
+      for (const auto &tool : missing) {
+        std::cout << "  • " << RED << tool << RESET << "\n";
+      }
+      std::cout << "\nInstall with: " << YELLOW << "dreamland base-devel"
+                << RESET << "\n";
+      std::cout << "Or manually: " << YELLOW << "dreamland install --arch ";
+      for (const auto &tool : missing) {
+        std::cout << tool << " ";
+      }
+      std::cout << RESET << "\n";
+      return false;
     }
-    
+
     return true;
-}
+  }
+  
   bool build_package(const Package &pkg, const std::string &build_path) {
     print_status("Building " + pkg.name + "...");
 
@@ -1038,64 +1213,96 @@ private:
   }
 
   std::vector<std::string> resolve_dependencies(const std::string &pkg_name) {
-    std::vector<std::string> install_order;
-    std::set<std::string> visited;
-    std::set<std::string> temp_mark;
+    std::map<std::string, std::vector<std::string>> dep_graph;
+    std::set<std::string> all_packages;
 
-    std::function<bool(const std::string &)> visit =
-        [&](const std::string &name) -> bool {
-      if (visited.count(name))
-        return true;
-      if (temp_mark.count(name)) {
-        print_error("Circular dependency detected: " + name);
-        return false;
-      }
-      if (installed.count(name))
-        return true;
+    // Build complete dependency graph using BFS
+    std::queue<std::string> to_process;
+    to_process.push(pkg_name);
 
-      auto it = packages.find(name);
+    while (!to_process.empty()) {
+      std::string current = to_process.front();
+      to_process.pop();
 
-      // Try to load from Galactica if not found
+      if (all_packages.count(current))
+        continue; // Already processed
+      if (installed.count(current))
+        continue; // Already installed
+
+      all_packages.insert(current);
+
+      // Load package if not already loaded
+      auto it = packages.find(current);
       if (it == packages.end()) {
-        if (load_galactica_package(name)) {
-          it = packages.find(name);
-        }
+        load_galactica_package(current);
+        it = packages.find(current);
       }
 
       if (it == packages.end()) {
-        print_warning("Package not found: " + name);
-        return true;
+        print_debug("Dependency not found, skipping: " + current);
+        continue;
       }
 
-      temp_mark.insert(name);
+      // Resolve dependencies from .PKGINFO if it's an Arch package
+      if (it->second.source == PackageSource::ARCH_BINARY && 
+          !it->second.deps_resolved) {
+        resolve_arch_package_deps(current);
+        it = packages.find(current); // Refresh iterator
+      }
 
-      // Recursively resolve ALL dependencies (both Galactica and Arch)
+      // Extract and queue all dependencies
+      std::vector<std::string> deps;
       for (const auto &dep_raw : it->second.dependencies) {
         std::string dep = dep_raw;
+        // Strip version constraints
         size_t op_pos = dep.find_first_of(">=<");
         if (op_pos != std::string::npos) {
           dep = dep.substr(0, op_pos);
         }
 
-        // Check if dependency exists in either source
-        if (packages.find(dep) == packages.end()) {
-          load_galactica_package(dep);
-        }
-
-        if (!visit(dep))
-          return false;
+        deps.push_back(dep);
+        to_process.push(dep); // Queue for processing
       }
 
-      temp_mark.erase(name);
-      visited.insert(name);
-      install_order.push_back(name);
+      dep_graph[current] = deps;
+    }
 
+    // Topological sort using DFS
+    std::vector<std::string> result;
+    std::set<std::string> visited;
+    std::set<std::string> temp_mark;
+
+    std::function<bool(const std::string &)> visit =
+        [&](const std::string &node) -> bool {
+      if (visited.count(node))
+        return true;
+      if (temp_mark.count(node)) {
+        print_error("Circular dependency: " + node);
+        return false;
+      }
+
+      temp_mark.insert(node);
+
+      if (dep_graph.count(node)) {
+        for (const auto &dep : dep_graph[node]) {
+          if (!visit(dep))
+            return false;
+        }
+      }
+
+      temp_mark.erase(node);
+      visited.insert(node);
+      result.push_back(node);
       return true;
     };
 
-    if (!visit(pkg_name))
-      return {};
-    return install_order;
+    // Visit all packages
+    for (const auto &pkg : all_packages) {
+      if (!visit(pkg))
+        return {};
+    }
+
+    return result;
   }
 
 public:
@@ -1137,9 +1344,9 @@ public:
     std::cout << "  " << YELLOW << arch_count << RESET
               << " Arch packages (binary fallback)\n";
     std::cout << "\n";
-    std::cout << CYAN << "Philosophy:" << RESET << "\n";
-    std::cout << "  • Source builds by default (from Galactica)\n";
-    std::cout << "  • Binary fallback with --arch flag\n";
+    std::cout << CYAN << "Note:" << RESET << " Dependencies resolved from .pkg.tar.zst files\n";
+    std::cout << "  • Accurate and authoritative\n";
+    std::cout << "  • Downloads packages as needed\n";
     std::cout << "  • Full control over your system ✨\n";
   }
 
@@ -1225,6 +1432,7 @@ public:
       print_warning("No packages found matching: " + query);
     }
   }
+  
   void install_base_devel() {
     print_banner();
     if (packages.empty() && galactica_packages.empty()) {
@@ -1250,36 +1458,32 @@ public:
       return;
     }
 
-    std::set<std::string> to_install;
+    std::vector<std::string> to_install_list;
 
     for (const auto &pkg_name : BASE_DEVEL_PACKAGES) {
+      // Check if already installed
+      if (installed.count(pkg_name)) {
+        continue;
+      }
+
       // Check if in Arch repos
       if (packages.count(pkg_name) &&
           packages[pkg_name].source == PackageSource::ARCH_BINARY) {
-        if (!resolve_arch_dependencies(pkg_name, to_install)) {
-          print_warning("Could not resolve: " + pkg_name);
-        }
+        to_install_list.push_back(pkg_name);
       }
     }
 
-    // Remove already installed
-    std::set<std::string> final_list;
-    for (const auto &name : to_install) {
-      if (!installed.count(name)) {
-        final_list.insert(name);
-      }
-    }
-
-    if (final_list.empty()) {
+    if (to_install_list.empty()) {
       print_success("All base-devel packages already installed!");
       return;
     }
 
-    std::cout << "\nPackages to install (" << final_list.size() << "):\n";
-    for (const auto &name : final_list) {
+    std::cout << "\nPackages to install (" << to_install_list.size() << "):\n";
+    for (const auto &name : to_install_list) {
       std::cout << "  • " << name << "\n";
     }
 
+    std::cout << "\nNote: Dependencies will be resolved from .pkg.tar.zst files\n";
     std::cout << "\nContinue? (y/n) [y]: ";
     std::string confirm;
     std::getline(std::cin, confirm);
@@ -1287,9 +1491,9 @@ public:
       return;
     }
 
-    // Install all packages
-    for (const auto &name : final_list) {
-      if (!install_from_arch(packages[name])) {
+    // Install all packages (resolve_dependencies will handle dep resolution)
+    for (const auto &name : to_install_list) {
+      if (!install_package(name, true)) {
         print_error("Failed to install " + name);
         return;
       }
@@ -1298,8 +1502,7 @@ public:
     print_success("base-devel installation complete!");
   }
 
-
- bool install_package(const std::string &pkg_name, bool force_arch = false) {
+  bool install_package(const std::string &pkg_name, bool force_arch = false) {
     load_installed();
 
     if (packages.empty() && galactica_packages.empty()) {
@@ -1371,7 +1574,7 @@ public:
       }
     }
 
-    print_status("Resolving dependencies for " + pkg_name + "...");
+    print_status("Resolving dependencies for " + pkg_name + " (from .pkg.tar.zst)...");
     std::vector<std::string> install_order = resolve_dependencies(pkg_name);
 
     if (install_order.empty()) {
@@ -1412,6 +1615,10 @@ public:
 
         if (pkg.source == PackageSource::ARCH_BINARY && pkg.size > 0) {
           std::cout << " (" << (pkg.size / 1024 / 1024) << " MB)";
+        }
+        
+        if (pkg.deps_resolved && !pkg.dependencies.empty()) {
+          std::cout << " [" << pkg.dependencies.size() << " deps]";
         }
         std::cout << "\n";
       }
@@ -1471,6 +1678,9 @@ public:
         print_error("Failed to install " + name);
         return false;
       }
+      
+      // Save updated package database with resolved deps
+      save_package_db();
     }
 
     std::cout << "\n";
@@ -1482,6 +1692,7 @@ public:
 
     return true;
   }
+  
   void list_installed() {
     print_banner();
     load_installed();
@@ -1567,6 +1778,205 @@ public:
     }
   }
 
+  void show_deps(const std::string &pkg_name, bool recursive = false) {
+    if (packages.empty() && galactica_packages.empty()) {
+      print_status("Loading package database...");
+      load_package_db();
+
+      std::ifstream index_file(pkg_index);
+      if (index_file.is_open()) {
+        std::string line;
+        while (std::getline(index_file, line)) {
+          line.erase(0, line.find_first_not_of(" \t\r\n"));
+          line.erase(line.find_last_not_of(" \t\r\n") + 1);
+          if (!line.empty() && line[0] != '#') {
+            galactica_packages.insert(line);
+          }
+        }
+      }
+    }
+
+    load_installed();
+
+    if (packages.empty() && galactica_packages.empty()) {
+      print_warning("Package database is empty. Run 'dreamland sync' first.");
+      return;
+    }
+
+    // Try to find package
+    Package *pkg_ptr = nullptr;
+
+    // Try Galactica first
+    if (load_galactica_package(pkg_name)) {
+      auto it = packages.find(pkg_name);
+      if (it != packages.end()) {
+        pkg_ptr = &it->second;
+      }
+    }
+
+    // Try Arch
+    if (!pkg_ptr) {
+      auto it = packages.find(pkg_name);
+      if (it != packages.end() &&
+          it->second.source == PackageSource::ARCH_BINARY) {
+        pkg_ptr = &it->second;
+      }
+    }
+
+    if (!pkg_ptr) {
+      print_error("Package not found: " + pkg_name);
+      return;
+    }
+
+    print_banner();
+    std::cout << "Package: " << PINK << pkg_ptr->name << RESET << " "
+              << pkg_ptr->version;
+
+    if (pkg_ptr->source == PackageSource::GALACTICA) {
+      std::cout << CYAN " [source]" RESET << "\n";
+    } else {
+      std::cout << YELLOW " [binary]" RESET << "\n";
+    }
+
+    std::cout << pkg_ptr->description << "\n\n";
+
+    // Resolve dependencies if Arch package
+    if (pkg_ptr->source == PackageSource::ARCH_BINARY &&
+        !pkg_ptr->deps_resolved) {
+      print_status("Resolving dependencies from .pkg.tar.zst...");
+      resolve_arch_package_deps(pkg_name);
+      pkg_ptr = &packages[pkg_name]; // Refresh pointer
+    }
+
+    if (!recursive) {
+      // Simple list of direct dependencies
+      if (pkg_ptr->dependencies.empty()) {
+        std::cout << CYAN << "No dependencies" << RESET << "\n";
+      } else {
+        std::cout << CYAN << "Direct dependencies (" 
+                  << pkg_ptr->dependencies.size() << "):" << RESET << "\n";
+        for (const auto &dep : pkg_ptr->dependencies) {
+          bool is_installed = installed.find(dep) != installed.end();
+          std::string status = is_installed ? GREEN " [installed]" RESET : "";
+          std::cout << "  • " << dep << status << "\n";
+        }
+      }
+    } else {
+      // Recursive dependency tree
+      std::cout << CYAN << "Full dependency tree:" << RESET << "\n\n";
+
+      std::set<std::string> all_deps;
+      std::map<std::string, std::vector<std::string>> dep_tree;
+      std::queue<std::string> to_process;
+
+      to_process.push(pkg_name);
+      all_deps.insert(pkg_name);
+
+      // Build dependency tree
+      while (!to_process.empty()) {
+        std::string current = to_process.front();
+        to_process.pop();
+
+        auto it = packages.find(current);
+        if (it == packages.end()) {
+          if (!load_galactica_package(current)) {
+            continue;
+          }
+          it = packages.find(current);
+        }
+
+        if (it == packages.end())
+          continue;
+
+        // Resolve if needed
+        if (it->second.source == PackageSource::ARCH_BINARY &&
+            !it->second.deps_resolved) {
+          resolve_arch_package_deps(current);
+          it = packages.find(current);
+        }
+
+        std::vector<std::string> deps;
+        for (const auto &dep : it->second.dependencies) {
+          std::string clean_dep = dep;
+          size_t op_pos = clean_dep.find_first_of(">=<");
+          if (op_pos != std::string::npos) {
+            clean_dep = clean_dep.substr(0, op_pos);
+          }
+          deps.push_back(clean_dep);
+
+          if (all_deps.find(clean_dep) == all_deps.end()) {
+            all_deps.insert(clean_dep);
+            to_process.push(clean_dep);
+          }
+        }
+
+        dep_tree[current] = deps;
+      }
+
+      // Print tree recursively
+      std::set<std::string> printed;
+      std::function<void(const std::string &, int, bool)> print_tree =
+          [&](const std::string &node, int depth, bool is_last) {
+            if (printed.count(node)) {
+              for (int i = 0; i < depth; i++)
+                std::cout << "  ";
+              std::cout << (is_last ? "└─ " : "├─ ");
+              std::cout << node << YELLOW " (already shown)" RESET << "\n";
+              return;
+            }
+
+            printed.insert(node);
+
+            for (int i = 0; i < depth; i++)
+              std::cout << "  ";
+
+            if (depth > 0) {
+              std::cout << (is_last ? "└─ " : "├─ ");
+            }
+
+            bool is_installed = installed.find(node) != installed.end();
+            std::string status = is_installed ? GREEN " [installed]" RESET : "";
+
+            std::cout << node << status;
+
+            // Show package source
+            auto it = packages.find(node);
+            if (it != packages.end()) {
+              if (it->second.source == PackageSource::GALACTICA) {
+                std::cout << CYAN " [source]" RESET;
+              } else if (it->second.source == PackageSource::ARCH_BINARY) {
+                std::cout << YELLOW " [binary]" RESET;
+              }
+            }
+            std::cout << "\n";
+
+            if (dep_tree.count(node)) {
+              const auto &deps = dep_tree[node];
+              for (size_t i = 0; i < deps.size(); i++) {
+                print_tree(deps[i], depth + 1, i == deps.size() - 1);
+              }
+            }
+          };
+
+      print_tree(pkg_name, 0, true);
+
+      std::cout << "\n";
+      std::cout << "Total dependencies: " << (all_deps.size() - 1) << "\n";
+
+      // Count installed
+      int installed_count = 0;
+      for (const auto &dep : all_deps) {
+        if (dep != pkg_name && installed.count(dep)) {
+          installed_count++;
+        }
+      }
+
+      if (installed_count > 0) {
+        std::cout << "Already installed: " << installed_count << "\n";
+      }
+    }
+  }
+
   void show_usage(const std::string &prog) {
     print_banner();
     std::cout << "Usage: " << prog << " <command> [options]\n\n";
@@ -1574,15 +1984,20 @@ public:
     std::cout << "  sync                     Sync package databases\n";
     std::cout << "  install [opts] <package> Install a package\n";
     std::cout << "  search <query>           Search for packages\n";
+    std::cout << "  deps <package> [opts]    Show package dependencies\n";
     std::cout << "  list                     List installed packages\n";
     std::cout << "  clean                    Clean caches\n";
     std::cout << "  base-devel               Install base development tools\n";
     std::cout << "\nInstall Options:\n";
     std::cout
         << "  --arch                   Force Arch binary (skip source build)\n";
+    std::cout << "\nDeps Options:\n";
+    std::cout << "  --recursive, -r          Show full dependency tree\n";
     std::cout << "\nExamples:\n";
     std::cout << "  " << prog << " sync\n";
     std::cout << "  " << prog << " search editor\n";
+    std::cout << "  " << prog << " deps neovim\n";
+    std::cout << "  " << prog << " deps neovim --recursive\n";
     std::cout << "  " << prog
               << " install vim          # Builds from source (Galactica)\n";
     std::cout << "  " << prog
@@ -1594,6 +2009,8 @@ public:
               << " Build from Galactica by default\n";
     std::cout << "  " << YELLOW << "• Binary fallback:" << RESET
               << " Use --arch for speed/convenience\n";
+    std::cout << "  " << CYAN << "• .PKGINFO deps:" << RESET
+              << " Accurate dependencies from package files\n";
     std::cout << "  • Full control over your system\n";
     std::cout << "  • Transparency and reproducibility\n";
     std::cout << "\nConfiguration:\n";
@@ -1601,6 +2018,8 @@ public:
     std::cout << "  Cache:      " << cache_dir << "\n";
     std::cout << "  Data:       "
               << fs::path(installed_db).parent_path().string() << "\n";
+    std::cout << "\nDebug Mode:\n";
+    std::cout << "  export DREAMLAND_DEBUG=1\n";
   }
 };
 
@@ -1619,6 +2038,26 @@ int main(int argc, char *argv[]) {
       dl.sync();
     } else if (command == "search" && argc >= 3) {
       dl.search(argv[2]);
+    } else if (command == "deps" && argc >= 3) {
+      bool recursive = false;
+      std::string pkg_name;
+
+      for (int i = 2; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--recursive" || arg == "-r") {
+          recursive = true;
+        } else {
+          pkg_name = arg;
+        }
+      }
+
+      if (pkg_name.empty()) {
+        std::cerr << RED << "Error: No package name specified" << RESET << "\n";
+        dl.show_usage(argv[0]);
+        return 1;
+      }
+
+      dl.show_deps(pkg_name, recursive);
     } else if (command == "install" && argc >= 3) {
       bool force_arch = false;
       std::string pkg_name;
