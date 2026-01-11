@@ -21,6 +21,7 @@
 #include <mutex>
 #include <atomic>
 #include <sys/sysmacros.h>
+
 #define AIRRIDE_SOCKET "/run/airride.sock"
 #define SERVICES_DIR "/etc/airride/services"
 #define LOG_DIR "/var/log/airride"
@@ -34,13 +35,14 @@ struct Service {
     ServiceType type = ServiceType::SIMPLE;
     std::string exec_start;
     std::string exec_stop;
+    std::string tty_device;  // TTY device for this service
     std::vector<std::string> requires;
     std::vector<std::string> after;
     bool restart_on_failure = false;
     bool autostart = false;
-    bool parallel = false;      // Can run in parallel with other services
-    bool clear_screen = false;  // Clear screen before starting
-    bool foreground = false;    // Run in foreground (for getty)
+    bool parallel = false;
+    bool clear_screen = false;
+    bool foreground = false;
     int restart_delay = 5;
     pid_t pid = 0;
     ServiceState state = ServiceState::STOPPED;
@@ -63,8 +65,10 @@ private:
         mkdir("/run", 0755);
         mkdir("/tmp", 0755);
         mkdir("/dev/pts", 0755);
+        mkdir("/dev/dri", 0755);
         mkdir(LOG_DIR, 0755);
         mkdir("/var/log", 0755);
+        mkdir("/usr/share/udhcpc", 0755);
         
         mount("proc", "/proc", "proc", MS_NOEXEC | MS_NOSUID | MS_NODEV, nullptr);
         mount("sysfs", "/sys", "sysfs", MS_NOEXEC | MS_NOSUID | MS_NODEV, nullptr);
@@ -77,22 +81,43 @@ private:
         mknod("/dev/console", S_IFCHR | 0600, makedev(5, 1));
         mknod("/dev/null", S_IFCHR | 0666, makedev(1, 3));
         mknod("/dev/zero", S_IFCHR | 0666, makedev(1, 5));
+        mknod("/dev/random", S_IFCHR | 0666, makedev(1, 8));
+        mknod("/dev/urandom", S_IFCHR | 0666, makedev(1, 9));
         mknod("/dev/tty", S_IFCHR | 0666, makedev(5, 0));
         mknod("/dev/tty0", S_IFCHR | 0620, makedev(4, 0));
+        mknod("/dev/tty1", S_IFCHR | 0620, makedev(4, 1));
+        mknod("/dev/tty2", S_IFCHR | 0620, makedev(4, 2));
+        mknod("/dev/tty3", S_IFCHR | 0620, makedev(4, 3));
         mknod("/dev/ttyS0", S_IFCHR | 0660, makedev(4, 64));
+        mknod("/dev/fb0", S_IFCHR | 0666, makedev(29, 0));
+        mknod("/dev/dri/card0", S_IFCHR | 0666, makedev(226, 0));
+        mknod("/dev/dri/renderD128", S_IFCHR | 0666, makedev(226, 128));
+        
+        // Set hostname early
+        set_hostname();
         
         std::cout << "[AirRide] Filesystems ready" << std::endl;
     }
 
+    void set_hostname() {
+        std::ifstream hf("/etc/hostname");
+        std::string hostname = "galactica";
+        if (hf.is_open()) {
+            std::getline(hf, hostname);
+            hf.close();
+        }
+        if (!hostname.empty()) {
+            sethostname(hostname.c_str(), hostname.length());
+        }
+    }
+
     void clear_console() {
-        // Clear screen using escape codes on console
         int fd = open("/dev/console", O_WRONLY);
         if (fd >= 0) {
             const char* clear = "\033[2J\033[H";
             write(fd, clear, strlen(clear));
             close(fd);
         }
-        // Also try stdout
         std::cout << "\033[2J\033[H" << std::flush;
     }
 
@@ -134,6 +159,7 @@ private:
                 else if (key == "description") svc.description = value;
                 else if (key == "exec_start") svc.exec_start = value;
                 else if (key == "exec_stop") svc.exec_stop = value;
+                else if (key == "tty") svc.tty_device = value;
                 else if (key == "autostart") svc.autostart = is_true(value);
                 else if (key == "parallel") svc.parallel = is_true(value);
                 else if (key == "clear_screen") svc.clear_screen = is_true(value);
@@ -228,7 +254,7 @@ private:
             svc->state = ServiceState::STARTING;
         }
 
-        // Start dependencies first (non-parallel ones)
+        // Start dependencies first
         for (const auto& dep : svc->requires) {
             if (!start_service(dep)) {
                 std::lock_guard<std::mutex> lock(services_mutex);
@@ -242,16 +268,28 @@ private:
             wait_for_service(dep, 10);
         }
 
-        std::cout << "[AirRide] Starting " << svc->name << std::endl;
+        std::cout << "[AirRide] Starting " << svc->name;
+        if (!svc->tty_device.empty()) {
+            std::cout << " on " << svc->tty_device;
+        }
+        std::cout << std::endl;
 
         pid_t pid = fork();
         if (pid == 0) {
             // Child process
             setsid();
             
-            if (svc->foreground) {
-                // Foreground service - connect to console
-                int fd = open("/dev/console", O_RDWR);
+            // Determine which TTY to use
+            std::string tty_path;
+            if (!svc->tty_device.empty()) {
+                tty_path = svc->tty_device;
+            } else if (svc->foreground) {
+                tty_path = "/dev/console";
+            }
+            
+            if (!tty_path.empty()) {
+                // Open TTY for this service
+                int fd = open(tty_path.c_str(), O_RDWR | O_NOCTTY);
                 if (fd >= 0) {
                     dup2(fd, 0);
                     dup2(fd, 1);
@@ -295,7 +333,6 @@ private:
             
             // For oneshot services, wait for completion
             if (svc->type == ServiceType::ONESHOT) {
-                // Unlock before waiting
                 services_mutex.unlock();
                 
                 int status;
@@ -338,7 +375,6 @@ private:
         if (svc.pid > 0) {
             kill(svc.pid, SIGTERM);
             
-            // Wait with timeout (unlock while waiting)
             services_mutex.unlock();
             for (int i = 0; i < 50; i++) {
                 usleep(100000);
@@ -349,7 +385,6 @@ private:
             }
             services_mutex.lock();
             
-            // Force kill if still running
             if (svc.pid > 0) {
                 kill(svc.pid, SIGKILL);
                 waitpid(svc.pid, nullptr, 0);
@@ -380,8 +415,7 @@ private:
         }
         ss << "\n";
         if (svc.pid > 0) ss << "PID: " << svc.pid << "\n";
-        ss << "Parallel: " << (svc.parallel ? "yes" : "no") << "\n";
-        ss << "Foreground: " << (svc.foreground ? "yes" : "no") << "\n";
+        if (!svc.tty_device.empty()) ss << "TTY: " << svc.tty_device << "\n";
         return ss.str();
     }
 
@@ -399,7 +433,7 @@ private:
                 case ServiceState::FAILED: ss << "failed"; break;
             }
             if (svc.autostart) ss << " [auto]";
-            if (svc.parallel) ss << " [parallel]";
+            if (!svc.tty_device.empty()) ss << " [" << svc.tty_device << "]";
             ss << "\n";
         }
         return ss.str();
@@ -468,8 +502,10 @@ private:
                     svc.state = success ? ServiceState::STOPPED : ServiceState::FAILED;
                     svc.pid = 0;
                     
+                    std::cout << "[AirRide] Service " << name << " exited" << std::endl;
+                    
                     // Auto-restart if configured
-                    if (svc.restart_on_failure && !success && svc.failures < 5) {
+                    if (svc.restart_on_failure && svc.failures < 10) {
                         svc.failures++;
                         std::string svc_name = name;
                         int delay = svc.restart_delay;
@@ -487,18 +523,18 @@ private:
     void start_autostart_services() {
         std::cout << "[AirRide] Starting services..." << std::endl;
         
-        // Collect services
         std::vector<std::string> parallel_services;
         std::vector<std::string> sequential_services;
-        std::string getty_service;
+        std::vector<std::string> tty_services;
         
         {
             std::lock_guard<std::mutex> lock(services_mutex);
             for (auto& [name, svc] : services) {
                 if (!svc.autostart) continue;
                 
-                if (name == "getty" || name == "login") {
-                    getty_service = name;
+                // TTY services (like login prompts) start last
+                if (!svc.tty_device.empty() || svc.foreground) {
+                    tty_services.push_back(name);
                 } else if (svc.parallel) {
                     parallel_services.push_back(name);
                 } else {
@@ -525,24 +561,19 @@ private:
             if (t.joinable()) t.join();
         }
         
-        // Wait a moment for output to settle
-        usleep(300000);
+        // Wait for network to settle
+        usleep(500000);
         
-        // Clear screen and start getty
-        if (!getty_service.empty()) {
-            // Check if getty has clear_screen flag, if not force it
-            {
-                std::lock_guard<std::mutex> lock(services_mutex);
-                auto it = services.find(getty_service);
-                if (it != services.end() && it->second.clear_screen) {
-                    clear_console();
-                }
+        // Clear screen before TTY services
+        clear_console();
+        
+        // Start TTY services (login prompts)
+        if (!tty_services.empty()) {
+            for (const auto& name : tty_services) {
+                start_service_internal(name);
             }
-            clear_console();
-            start_service_internal(getty_service);
         } else {
-            clear_console();
-            std::cout << "[AirRide] No login service, starting shell" << std::endl;
+            std::cout << "[AirRide] No TTY services, starting emergency shell" << std::endl;
             start_service("shell");
         }
     }

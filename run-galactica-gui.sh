@@ -1,5 +1,3 @@
-
-
 #!/usr/bin/env bash
 # galactica-boot.sh — simple, opinionated QEMU launcher
 # Author: your friendly VM whisperer
@@ -92,4 +90,3 @@ printf '  %s\n' "$QEMU_BIN" "${QEMU_ARGS[@]}" -append "\"$APPEND\""
 echo
 # Finally exec QEMU
 exec "$QEMU_BIN" "${QEMU_ARGS[@]}" -append "$APPEND"
-

@@ -142,6 +142,9 @@ class Dreamland {
     }
   }
 
+  std::string get_cache_dir() const {
+    return cache_dir;
+  }
   void banner() {
     std::cout << PINK << "    ★ DREAMLAND ★\n    User's Choice\n"
               << RESET << "\n";
@@ -256,9 +259,21 @@ class Dreamland {
   int exec(const std::string &cmd) { return WEXITSTATUS(system(cmd.c_str())); }
   bool parse_arch_db_with_deps(const std::string &db, const std::string &repo) {
     std::string dir = db_cache_dir + "/" + repo;
+    
+    // Remove existing directory if it exists to ensure clean extraction
+    std::error_code ec;
+    if (fs::exists(dir)) {
+        dbg("Removing old " + repo + " database directory");
+        fs::remove_all(dir, ec);
+    }
+    
     fs::create_directories(dir);
-    if (exec("tar -xzf " + db + " -C " + dir + " 2>/dev/null") != 0)
-      return false;
+    
+    if (exec("tar -xzf " + db + " -C " + dir + " 2>/dev/null") != 0) {
+        err("Failed to extract " + repo + " database");
+        return false;
+    }
+    
     int cnt = 0;
 
     for (auto &e : fs::directory_iterator(dir)) {
@@ -330,10 +345,9 @@ class Dreamland {
       }
     }
 
-    ok(std::to_string(cnt) + " from " + repo);
+    ok(std::to_string(cnt) + " packages from " + repo);
     return cnt > 0;
-  }
-  bool load_mod(const std::string &path) {
+}  bool load_mod(const std::string &path) {
     dbg("Loading: " + path);
     void *h = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!h) {
@@ -949,23 +963,46 @@ bool parse_galactica_pkg(const std::string& pkg_path) {
     
     return false;
 }
-  bool sync_arch() {
+bool sync_arch() {
     status("Syncing Arch databases...");
+    
+    // Try each mirror until we get both repos successfully
     for (auto &mirror : ARCH_MIRRORS) {
-      bool good = true;
-      for (auto &repo : ARCH_REPOS) {
-        std::string url = mirror + "/" + repo + "/os/x86_64/" + repo + ".db";
-        std::string file = db_cache_dir + "/" + repo + ".db";
-        if (!dl_file(url, file) || !parse_arch_db_with_deps(file, repo)) {
-          good = false;
-          break;
+        bool all_repos_ok = true;
+        
+        for (auto &repo : ARCH_REPOS) {
+            std::string url = mirror + "/" + repo + "/os/x86_64/" + repo + ".db";
+            std::string file = db_cache_dir + "/" + repo + ".db";
+            
+            dbg("Downloading " + repo + " database from " + mirror);
+            
+            if (!dl_file(url, file)) {
+                dbg("Failed to download " + repo + " from " + mirror);
+                all_repos_ok = false;
+                break;
+            }
+            
+            dbg("Parsing " + repo + " database");
+            
+            if (!parse_arch_db_with_deps(file, repo)) {
+                dbg("Failed to parse " + repo + " database");
+                all_repos_ok = false;
+                break;
+            }
         }
-      }
-      if (good)
-        return true;
+        
+        // If all repos downloaded and parsed successfully, we're done
+        if (all_repos_ok) {
+            ok("Successfully synced from " + mirror);
+            return true;
+        }
+        
+        warn("Failed to sync all repos from " + mirror + ", trying next mirror...");
     }
+    
+    err("Failed to sync from all mirrors");
     return false;
-  }
+}
 
   bool extract_pkg(const std::string &pkg, const std::string &dest,
                    std::vector<std::string> *files = nullptr) {
@@ -1132,8 +1169,22 @@ public:
     curl_global_cleanup();
   }
 
- void sync() {
+void sync() {
     banner(); 
+    
+    // Clear cache directory before syncing
+    std::string cache_db_path = get_cache_dir() + "/db";
+    
+    // Remove the cache/db directory if it exists
+    std::error_code ec;
+    if (std::filesystem::exists(cache_db_path, ec)) {
+			std::cout << "Removing old cache database..." << "\n" ;
+        if (std::filesystem::remove_all(cache_db_path, ec)) {
+            ok("Old cache removed");
+        } else {
+            warn("Failed to remove old cache: " + ec.message());
+        }
+    }
     
     // Fetch Galactica INDEX
     fetch_galactica(); 
