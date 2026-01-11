@@ -142,9 +142,7 @@ class Dreamland {
     }
   }
 
-  std::string get_cache_dir() const {
-    return cache_dir;
-  }
+  std::string get_cache_dir() const { return cache_dir; }
   void banner() {
     std::cout << PINK << "    ★ DREAMLAND ★\n    User's Choice\n"
               << RESET << "\n";
@@ -183,35 +181,35 @@ class Dreamland {
     return r == CURLE_OK && rc == 200;
   }
 
- bool dl_file(const std::string& url, const std::string& path) {
+  bool dl_file(const std::string &url, const std::string &path) {
     // If already cached and valid, return success
     if (fs::exists(path) && fs::file_size(path) > 0) {
-        dbg("Using cached file: " + path);
-        return true;
+      dbg("Using cached file: " + path);
+      return true;
     }
-    
-    CURL* c = curl_easy_init(); 
+
+    CURL *c = curl_easy_init();
     if (!c) {
-        err("Failed to initialize CURL");
-        return false;
+      err("Failed to initialize CURL");
+      return false;
     }
-    
+
     // Create parent directories
     try {
-        fs::create_directories(fs::path(path).parent_path());
-    } catch (const std::exception& e) {
-        err("Failed to create directory: " + std::string(e.what()));
-        curl_easy_cleanup(c);
-        return false;
+      fs::create_directories(fs::path(path).parent_path());
+    } catch (const std::exception &e) {
+      err("Failed to create directory: " + std::string(e.what()));
+      curl_easy_cleanup(c);
+      return false;
     }
-    
-    FILE* f = fopen(path.c_str(), "wb"); 
-    if (!f) { 
-        err("Failed to open file for writing: " + path);
-        curl_easy_cleanup(c); 
-        return false; 
+
+    FILE *f = fopen(path.c_str(), "wb");
+    if (!f) {
+      err("Failed to open file for writing: " + path);
+      curl_easy_cleanup(c);
+      return false;
     }
-    
+
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_file_cb);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
@@ -220,60 +218,60 @@ class Dreamland {
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 300L);
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 30L);
     curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L); // Fail on HTTP errors
-    
+
     // Add progress callback for large files
     if (debug) {
-        dbg("Downloading: " + url);
+      dbg("Downloading: " + url);
     }
-    
+
     CURLcode r = curl_easy_perform(c);
-    long rc; 
+    long rc;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &rc);
-    
-    fclose(f); 
+
+    fclose(f);
     curl_easy_cleanup(c);
-    
+
     if (r != CURLE_OK) {
-        dbg("CURL error: " + std::string(curl_easy_strerror(r)));
-        fs::remove(path); 
-        return false; 
+      dbg("CURL error: " + std::string(curl_easy_strerror(r)));
+      fs::remove(path);
+      return false;
     }
-    
+
     if (rc != 200) {
-        dbg("HTTP error: " + std::to_string(rc));
-        fs::remove(path);
-        return false;
+      dbg("HTTP error: " + std::to_string(rc));
+      fs::remove(path);
+      return false;
     }
-    
+
     // Verify file was downloaded
     if (!fs::exists(path) || fs::file_size(path) == 0) {
-        dbg("Downloaded file is empty or missing");
-        fs::remove(path);
-        return false;
+      dbg("Downloaded file is empty or missing");
+      fs::remove(path);
+      return false;
     }
-    
+
     dbg("Downloaded " + std::to_string(fs::file_size(path)) + " bytes");
     return true;
-}
+  }
 
   int exec(const std::string &cmd) { return WEXITSTATUS(system(cmd.c_str())); }
   bool parse_arch_db_with_deps(const std::string &db, const std::string &repo) {
     std::string dir = db_cache_dir + "/" + repo;
-    
+
     // Remove existing directory if it exists to ensure clean extraction
     std::error_code ec;
     if (fs::exists(dir)) {
-        dbg("Removing old " + repo + " database directory");
-        fs::remove_all(dir, ec);
+      dbg("Removing old " + repo + " database directory");
+      fs::remove_all(dir, ec);
     }
-    
+
     fs::create_directories(dir);
-    
+
     if (exec("tar -xzf " + db + " -C " + dir + " 2>/dev/null") != 0) {
-        err("Failed to extract " + repo + " database");
-        return false;
+      err("Failed to extract " + repo + " database");
+      return false;
     }
-    
+
     int cnt = 0;
 
     for (auto &e : fs::directory_iterator(dir)) {
@@ -347,7 +345,8 @@ class Dreamland {
 
     ok(std::to_string(cnt) + " packages from " + repo);
     return cnt > 0;
-}  bool load_mod(const std::string &path) {
+  }
+  bool load_mod(const std::string &path) {
     dbg("Loading: " + path);
     void *h = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!h) {
@@ -399,154 +398,203 @@ class Dreamland {
     modules.clear();
   }
 
-void save_pkg_db() {
-    std::ofstream f(pkg_db); if (!f) return;
-    for (auto& [n, p] : packages) {
-        if (p.source == PackageSource::ARCH_BINARY) {
-            f << "ARCH|" << p.name << "|" << p.version << "|" << p.repo << "|" << p.filename
-              << "|" << p.size << "|" << p.description << "|" << (p.deps_resolved ? "1" : "0") << "\n";
-        }
-        else if (p.source == PackageSource::GALACTICA) {
-            f << "GALACTICA|" << p.name << "|" << p.version << "|" << p.url << "|"
-              << p.category << "|" << p.description << "\n";
-        }
+  void save_pkg_db() {
+    std::ofstream f(pkg_db);
+    if (!f)
+      return;
+    for (auto &[n, p] : packages) {
+      if (p.source == PackageSource::ARCH_BINARY) {
+        f << "ARCH|" << p.name << "|" << p.version << "|" << p.repo << "|"
+          << p.filename << "|" << p.size << "|" << p.description << "|"
+          << (p.deps_resolved ? "1" : "0") << "\n";
+      } else if (p.source == PackageSource::GALACTICA) {
+        f << "GALACTICA|" << p.name << "|" << p.version << "|" << p.url << "|"
+          << p.category << "|" << p.description << "\n";
+      }
     }
-}
+  }
 
-// UPDATE load_pkg_db to also load Galactica packages
-void load_pkg_db() {
-    std::ifstream f(pkg_db); if (!f) return;
+  // UPDATE load_pkg_db to also load Galactica packages
+  void load_pkg_db() {
+    std::ifstream f(pkg_db);
+    if (!f)
+      return;
     std::string l;
     while (std::getline(f, l)) {
-        std::istringstream is(l);
-        std::string type;
-        std::getline(is, type, '|');
-        
-        if (type == "ARCH") {
-            std::string n, v, r, fn, sz, d, dr;
-            std::getline(is, n, '|'); std::getline(is, v, '|');
-            std::getline(is, r, '|'); std::getline(is, fn, '|'); std::getline(is, sz, '|');
-            std::getline(is, d, '|'); std::getline(is, dr, '|');
-            
-            Package p; 
-            p.name = n; p.version = v; p.repo = r; p.filename = fn;
-            try { p.size = std::stoull(sz); } catch (...) {}
-            p.description = d; 
-            p.source = PackageSource::ARCH_BINARY;
-            p.deps_resolved = dr == "1";
-            packages[n] = p;
+      std::istringstream is(l);
+      std::string type;
+      std::getline(is, type, '|');
+
+      if (type == "ARCH") {
+        std::string n, v, r, fn, sz, d, dr;
+        std::getline(is, n, '|');
+        std::getline(is, v, '|');
+        std::getline(is, r, '|');
+        std::getline(is, fn, '|');
+        std::getline(is, sz, '|');
+        std::getline(is, d, '|');
+        std::getline(is, dr, '|');
+
+        Package p;
+        p.name = n;
+        p.version = v;
+        p.repo = r;
+        p.filename = fn;
+        try {
+          p.size = std::stoull(sz);
+        } catch (...) {
         }
-        else if (type == "GALACTICA") {
-            std::string n, v, u, c, d;
-            std::getline(is, n, '|'); std::getline(is, v, '|');
-            std::getline(is, u, '|'); std::getline(is, c, '|');
-            std::getline(is, d, '|');
-            
-            Package p;
-            p.name = n; p.version = v; p.url = u; p.category = c; p.description = d;
-            p.source = PackageSource::GALACTICA;
-            packages[n] = p;
-        }
+        p.description = d;
+        p.source = PackageSource::ARCH_BINARY;
+        p.deps_resolved = dr == "1";
+        packages[n] = p;
+      } else if (type == "GALACTICA") {
+        std::string n, v, u, c, d;
+        std::getline(is, n, '|');
+        std::getline(is, v, '|');
+        std::getline(is, u, '|');
+        std::getline(is, c, '|');
+        std::getline(is, d, '|');
+
+        Package p;
+        p.name = n;
+        p.version = v;
+        p.url = u;
+        p.category = c;
+        p.description = d;
+        p.source = PackageSource::GALACTICA;
+        packages[n] = p;
+      }
     }
+  }
+
+std::string resolve_lib_to_pkg(const std::string& dep) {
+    // If it's a .so file, try to find the package
+    if (dep.find(".so") != std::string::npos) {
+        std::string base = dep.substr(0, dep.find(".so"));
+        
+        // Try: libcurl.so -> libcurl
+        if (packages.count(base)) return base;
+        
+        // Try: libcurl.so -> curl (strip "lib" prefix)
+        if (base.substr(0, 3) == "lib") {
+            std::string without_lib = base.substr(3);
+            if (packages.count(without_lib)) return without_lib;
+        }
+        
+        // Not found, return original
+        dbg("Could not resolve library: " + dep);
+    }
+    
+    return dep;
 }
 
- std::vector<std::string> resolve_dependencies(const std::string& pkg_name, 
-                                              std::set<std::string>& resolved,
-                                              std::set<std::string>& visited) {
+std::vector<std::string>
+resolve_dependencies(const std::string &pkg_name,
+                     std::set<std::string> &resolved,
+                     std::set<std::string> &visited) {
     std::vector<std::string> install_order;
-    
+
     // Avoid circular dependencies
     if (visited.count(pkg_name)) {
         return install_order;
     }
     visited.insert(pkg_name);
-    
+
     // Skip if already installed
     if (installed.count(pkg_name)) {
         resolved.insert(pkg_name);
         return install_order;
     }
-    
+
     // Find package in database
     auto it = packages.find(pkg_name);
     if (it == packages.end()) {
         warn("Dependency not found in database: " + pkg_name);
         return install_order;
     }
-    
-    const Package& pkg = it->second;
-    
+
+    const Package &pkg = it->second;
+
     // For Arch packages, we need to download to get dependencies
     if (pkg.source == PackageSource::ARCH_BINARY) {
         std::string cached = pkg_cache_dir + "/" + pkg.filename;
-        
+
         if (!fs::exists(cached)) {
             dbg("Downloading " + pkg_name + " to resolve dependencies...");
-            
+
             bool downloaded = false;
-            for (auto& mirror : ARCH_MIRRORS) {
-                std::string url = mirror + "/" + pkg.repo + "/os/x86_64/" + pkg.filename;
+            for (auto &mirror : ARCH_MIRRORS) {
+                std::string url =
+                    mirror + "/" + pkg.repo + "/os/x86_64/" + pkg.filename;
                 dbg("Trying mirror: " + mirror);
-                
+
                 if (dl_file(url, cached)) {
                     downloaded = true;
                     dbg("Downloaded from: " + mirror);
                     break;
                 }
             }
-            
+
             if (!downloaded) {
                 // Try to get dependencies from the database 'depends' file instead
-                warn("Could not download " + pkg_name + ", using database dependencies");
-                
+                warn("Could not download " + pkg_name +
+                     ", using database dependencies");
+
                 // Use dependencies from parse_arch_db_with_deps if available
-                for (const auto& dep : pkg.dependencies) {
-                    if (!resolved.count(dep)) {
-                        auto dep_order = resolve_dependencies(dep, resolved, visited);
+                for (const auto &dep : pkg.dependencies) {
+                    std::string resolved_dep = resolve_lib_to_pkg(dep);
+                    if (!resolved.count(resolved_dep)) {
+                        auto dep_order = resolve_dependencies(resolved_dep, resolved, visited);
                         install_order.insert(install_order.end(), dep_order.begin(), dep_order.end());
                     }
                 }
-                
+
                 // Still add this package to install order
                 if (!resolved.count(pkg_name)) {
                     install_order.push_back(pkg_name);
                     resolved.insert(pkg_name);
                 }
-                
+
                 return install_order;
             }
         }
-        
+
         // Extract dependencies from .PKGINFO
         std::vector<std::string> deps = extract_pkginfo_deps(cached);
-        
+
         // Recursively resolve dependencies
-        for (const auto& dep : deps) {
-            if (!resolved.count(dep)) {
-                auto dep_order = resolve_dependencies(dep, resolved, visited);
-                install_order.insert(install_order.end(), dep_order.begin(), dep_order.end());
+        for (const auto &dep : deps) {
+            std::string resolved_dep = resolve_lib_to_pkg(dep);
+            if (!resolved.count(resolved_dep)) {
+                auto dep_order =
+                    resolve_dependencies(resolved_dep, resolved, visited);
+                install_order.insert(install_order.end(), dep_order.begin(),
+                                   dep_order.end());
             }
         }
-    }
-    else if (pkg.source == PackageSource::GALACTICA) {
+    } else if (pkg.source == PackageSource::GALACTICA) {
         // For Galactica packages, use dependencies from .pkg file
-        for (const auto& dep : pkg.dependencies) {
-            if (!resolved.count(dep)) {
-                auto dep_order = resolve_dependencies(dep, resolved, visited);
-                install_order.insert(install_order.end(), dep_order.begin(), dep_order.end());
+        for (const auto &dep : pkg.dependencies) {
+            std::string resolved_dep = resolve_lib_to_pkg(dep);
+            if (!resolved.count(resolved_dep)) {
+                auto dep_order = resolve_dependencies(resolved_dep, resolved, visited);
+                install_order.insert(install_order.end(), dep_order.begin(),
+                                   dep_order.end());
             }
         }
     }
-    
+
     // Add this package to install order
     if (!resolved.count(pkg_name)) {
         install_order.push_back(pkg_name);
         resolved.insert(pkg_name);
     }
-    
+
     return install_order;
 }
-  std::vector<std::string> extract_pkginfo_deps(const std::string &pkg_path) {
+
+std::vector<std::string> extract_pkginfo_deps(const std::string &pkg_path) {
     std::vector<std::string> deps;
 
     struct archive *a = archive_read_new();
@@ -554,70 +602,69 @@ void load_pkg_db() {
     archive_read_support_format_all(a);
 
     if (archive_read_open_filename(a, pkg_path.c_str(), 10240) != ARCHIVE_OK) {
-      archive_read_free(a);
-      return deps;
+        archive_read_free(a);
+        return deps;
     }
 
     struct archive_entry *entry;
     bool found_pkginfo = false;
 
     while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
-      std::string pathname = archive_entry_pathname(entry);
+        std::string pathname = archive_entry_pathname(entry);
 
-      if (pathname == ".PKGINFO") {
-        found_pkginfo = true;
+        if (pathname == ".PKGINFO") {
+            found_pkginfo = true;
 
-        // Read the entire .PKGINFO file
-        size_t size = archive_entry_size(entry);
-        std::vector<char> buffer(size + 1);
+            // Read the entire .PKGINFO file
+            size_t size = archive_entry_size(entry);
+            std::vector<char> buffer(size + 1);
 
-        ssize_t bytes_read = archive_read_data(a, buffer.data(), size);
-        if (bytes_read > 0) {
-          buffer[bytes_read] = '\0';
-          std::string content(buffer.data());
+            ssize_t bytes_read = archive_read_data(a, buffer.data(), size);
+            if (bytes_read > 0) {
+                buffer[bytes_read] = '\0';
+                std::string content(buffer.data());
 
-          // Parse dependencies from .PKGINFO
-          std::istringstream iss(content);
-          std::string line;
+                // Parse dependencies from .PKGINFO
+                std::istringstream iss(content);
+                std::string line;
 
-          while (std::getline(iss, line)) {
-            // Dependencies are in format: depend = package-name>=version
-            // or: depend = package-name
-            if (line.find("depend = ") == 0) {
-              std::string dep = line.substr(9); // Skip "depend = "
+                while (std::getline(iss, line)) {
+                    // Dependencies are in format: depend = package-name>=version
+                    // or: depend = package-name
+                    if (line.find("depend = ") == 0) {
+                        std::string dep = line.substr(9); // Skip "depend = "
 
-              // Strip version constraints (>=, <=, =, <, >)
-              size_t pos = dep.find_first_of(">=<");
-              if (pos != std::string::npos) {
-                dep = dep.substr(0, pos);
-              }
+                        // Strip version constraints (>=, <=, =, <, >)
+                        size_t pos = dep.find_first_of(">=<");
+                        if (pos != std::string::npos) {
+                            dep = dep.substr(0, pos);
+                        }
 
-              // Trim whitespace
-              dep.erase(0, dep.find_first_not_of(" \t\r\n"));
-              dep.erase(dep.find_last_not_of(" \t\r\n") + 1);
+                        // Trim whitespace
+                        dep.erase(0, dep.find_first_not_of(" \t\r\n"));
+                        dep.erase(dep.find_last_not_of(" \t\r\n") + 1);
 
-              if (!dep.empty()) {
-                deps.push_back(dep);
-              }
+                        if (!dep.empty()) {
+                            deps.push_back(dep);
+                        }
+                    }
+                }
             }
-          }
+            break;
         }
-        break;
-      }
     }
 
     archive_read_close(a);
     archive_read_free(a);
 
     if (!found_pkginfo) {
-      dbg("No .PKGINFO found in " + pkg_path);
+        dbg("No .PKGINFO found in " + pkg_path);
     } else {
-      dbg("Found " + std::to_string(deps.size()) + " dependencies in .PKGINFO");
+        dbg("Found " + std::to_string(deps.size()) + " dependencies in .PKGINFO");
     }
 
     return deps;
-  }
-
+}  
 
   bool fetch_galactica() {
     status("Fetching Galactica index...");
@@ -687,322 +734,334 @@ void load_pkg_db() {
     return cnt > 0;
   }
 
-// Load all Galactica packages from INDEX
-bool load_galactica_packages() {
+  // Load all Galactica packages from INDEX
+  bool load_galactica_packages() {
     if (galactica_pkgs.empty()) {
-        dbg("No Galactica packages in INDEX");
-        return false;
+      dbg("No Galactica packages in INDEX");
+      return false;
     }
-    
-    int loaded = 0;
-    for (const auto& pkg_path : galactica_pkgs) {
-        if (parse_galactica_pkg(pkg_path)) {
-            loaded++;
-        }
-    }
-    
-    if (loaded > 0) {
-        ok("Loaded " + std::to_string(loaded) + " Galactica packages");
-        return true;
-    }
-    
-    return false;
-}
 
-// Install a Galactica package (source-based)
-bool install_galactica(const Package& p) {
-    std::cout << "Installing from source: " << PINK << p.name << RESET << " " << p.version << "\n";
-    
+    int loaded = 0;
+    for (const auto &pkg_path : galactica_pkgs) {
+      if (parse_galactica_pkg(pkg_path)) {
+        loaded++;
+      }
+    }
+
+    if (loaded > 0) {
+      ok("Loaded " + std::to_string(loaded) + " Galactica packages");
+      return true;
+    }
+
+    return false;
+  }
+
+  // Install a Galactica package (source-based)
+  bool install_galactica(const Package &p) {
+    std::cout << "Installing from source: " << PINK << p.name << RESET << " "
+              << p.version << "\n";
+
     // Get current working directory FIRST (before any fs operations)
     char cwd_buffer[PATH_MAX];
     if (getcwd(cwd_buffer, sizeof(cwd_buffer)) == nullptr) {
-        err("Failed to get current directory");
-        return false;
+      err("Failed to get current directory");
+      return false;
     }
     std::string old_cwd = cwd_buffer;
-    
+
     // Create build directory with better error handling
     std::string build_path = build_dir + "/" + p.name;
-    
+
     try {
-        // Ensure parent exists first
-        if (!fs::exists(build_dir)) {
-            fs::create_directories(build_dir);
-        }
-        
-        // Create package build directory
-        if (!fs::exists(build_path)) {
-            fs::create_directory(build_path);
-        }
-    } catch (const fs::filesystem_error& e) {
-        err("Failed to create build directory: " + std::string(e.what()));
-        err("Build dir: " + build_dir);
-        err("Package dir: " + build_path);
-        return false;
+      // Ensure parent exists first
+      if (!fs::exists(build_dir)) {
+        fs::create_directories(build_dir);
+      }
+
+      // Create package build directory
+      if (!fs::exists(build_path)) {
+        fs::create_directory(build_path);
+      }
+    } catch (const fs::filesystem_error &e) {
+      err("Failed to create build directory: " + std::string(e.what()));
+      err("Build dir: " + build_dir);
+      err("Package dir: " + build_path);
+      return false;
     }
-    
+
     // Change to build directory
     if (chdir(build_path.c_str()) != 0) {
-        err("Failed to change to build directory: " + build_path);
-        return false;
+      err("Failed to change to build directory: " + build_path);
+      return false;
     }
-    
+
     dbg("Working in: " + build_path);
-    
+
     // Download source
     if (!p.url.empty()) {
-        status("Downloading source...");
-        
-        // Extract filename from URL
-        std::string src_file;
-        size_t last_slash = p.url.find_last_of('/');
-        if (last_slash != std::string::npos) {
-            src_file = p.url.substr(last_slash + 1);
-        } else {
-            src_file = p.name + ".tar.gz";
+      status("Downloading source...");
+
+      // Extract filename from URL
+      std::string src_file;
+      size_t last_slash = p.url.find_last_of('/');
+      if (last_slash != std::string::npos) {
+        src_file = p.url.substr(last_slash + 1);
+      } else {
+        src_file = p.name + ".tar.gz";
+      }
+
+      dbg("Downloading to: " + src_file);
+
+      if (!dl_file(p.url, src_file)) {
+        err("Failed to download source from: " + p.url);
+        chdir(old_cwd.c_str());
+        return false;
+      }
+
+      // Only extract if it's an archive
+      if (src_file.find(".tar") != std::string::npos ||
+          src_file.find(".tgz") != std::string::npos) {
+        status("Extracting...");
+        if (exec("tar -xf " + src_file + " 2>/dev/null") != 0) {
+          err("Failed to extract source");
+          chdir(old_cwd.c_str());
+          return false;
         }
-        
-        dbg("Downloading to: " + src_file);
-        
-        if (!dl_file(p.url, src_file)) {
-            err("Failed to download source from: " + p.url);
-            chdir(old_cwd.c_str());
-            return false;
-        }
-        
-        // Only extract if it's an archive
-        if (src_file.find(".tar") != std::string::npos || 
-            src_file.find(".tgz") != std::string::npos) {
-            status("Extracting...");
-            if (exec("tar -xf " + src_file + " 2>/dev/null") != 0) {
-                err("Failed to extract source");
-                chdir(old_cwd.c_str());
-                return false;
-            }
-        }
+      }
     }
-    
+
     // Execute build script
     if (!p.build_script.empty()) {
-        status("Building...");
-        
-        // Write script to file
-        std::ofstream script("build.sh");
-        if (!script.is_open()) {
-            err("Failed to create build script");
-            chdir(old_cwd.c_str());
-            return false;
-        }
-        
-        script << "#!/bin/sh\n";
-        script << "set -e\n\n";
-        script << p.build_script << "\n";
-        script.close();
-        
-        chmod("build.sh", 0755);
-        
-        // Execute
-        int result = system("sh build.sh 2>&1");
-        if (result != 0) {
-            err("Build failed with exit code: " + std::to_string(WEXITSTATUS(result)));
-            chdir(old_cwd.c_str());
-            return false;
-        }
+      status("Building...");
+
+      // Write script to file
+      std::ofstream script("build.sh");
+      if (!script.is_open()) {
+        err("Failed to create build script");
+        chdir(old_cwd.c_str());
+        return false;
+      }
+
+      script << "#!/bin/sh\n";
+      script << "set -e\n\n";
+      script << p.build_script << "\n";
+      script.close();
+
+      chmod("build.sh", 0755);
+
+      // Execute
+      int result = system("sh build.sh 2>&1");
+      if (result != 0) {
+        err("Build failed with exit code: " +
+            std::to_string(WEXITSTATUS(result)));
+        chdir(old_cwd.c_str());
+        return false;
+      }
     } else {
-        // Default build process
-        status("Building with default commands...");
-        
-        // Try to find the extracted directory
-        std::string src_dir;
-        try {
-            for (auto& entry : fs::directory_iterator(".")) {
-                std::string filename = entry.path().filename().string();
-                if (entry.is_directory() && filename != "." && filename != "..") {
-                    src_dir = entry.path().string();
-                    dbg("Found source directory: " + src_dir);
-                    break;
-                }
-            }
-        } catch (...) {
-            dbg("No subdirectories found, building in current directory");
+      // Default build process
+      status("Building with default commands...");
+
+      // Try to find the extracted directory
+      std::string src_dir;
+      try {
+        for (auto &entry : fs::directory_iterator(".")) {
+          std::string filename = entry.path().filename().string();
+          if (entry.is_directory() && filename != "." && filename != "..") {
+            src_dir = entry.path().string();
+            dbg("Found source directory: " + src_dir);
+            break;
+          }
         }
-        
-        if (!src_dir.empty()) {
-            if (chdir(src_dir.c_str()) != 0) {
-                warn("Could not change to source directory, continuing in current directory");
-            }
+      } catch (...) {
+        dbg("No subdirectories found, building in current directory");
+      }
+
+      if (!src_dir.empty()) {
+        if (chdir(src_dir.c_str()) != 0) {
+          warn("Could not change to source directory, continuing in current "
+               "directory");
         }
-        
-        // Configure
-        std::string configure_flags = p.build_flags.count("configure_flags") ? 
-                                     p.build_flags.at("configure_flags") : "--prefix=/usr";
-        
-        if (fs::exists("configure")) {
-            status("Running configure...");
-            if (exec("./configure " + configure_flags + " 2>&1") != 0) {
-                err("Configure failed");
-                chdir(old_cwd.c_str());
-                return false;
-            }
+      }
+
+      // Configure
+      std::string configure_flags = p.build_flags.count("configure_flags")
+                                        ? p.build_flags.at("configure_flags")
+                                        : "--prefix=/usr";
+
+      if (fs::exists("configure")) {
+        status("Running configure...");
+        if (exec("./configure " + configure_flags + " 2>&1") != 0) {
+          err("Configure failed");
+          chdir(old_cwd.c_str());
+          return false;
         }
-        
-        // Make
-        std::string make_flags = p.build_flags.count("make_flags") ? 
-                                p.build_flags.at("make_flags") : "-j$(nproc)";
-        
-        if (fs::exists("Makefile") || fs::exists("makefile")) {
-            status("Running make...");
-            if (exec("make " + make_flags + " 2>&1") != 0) {
-                err("Make failed");
-                chdir(old_cwd.c_str());
-                return false;
-            }
-            
-            // Install
-            std::string install_target = p.build_flags.count("install_target") ?
-                                        p.build_flags.at("install_target") : "install";
-            
-            status("Installing...");
-            if (exec("make " + install_target + " 2>&1") != 0) {
-                err("Install failed");
-                chdir(old_cwd.c_str());
-                return false;
-            }
-        } else {
-            warn("No Makefile found, skipping build");
+      }
+
+      // Make
+      std::string make_flags = p.build_flags.count("make_flags")
+                                   ? p.build_flags.at("make_flags")
+                                   : "-j$(nproc)";
+
+      if (fs::exists("Makefile") || fs::exists("makefile")) {
+        status("Running make...");
+        if (exec("make " + make_flags + " 2>&1") != 0) {
+          err("Make failed");
+          chdir(old_cwd.c_str());
+          return false;
         }
+
+        // Install
+        std::string install_target = p.build_flags.count("install_target")
+                                         ? p.build_flags.at("install_target")
+                                         : "install";
+
+        status("Installing...");
+        if (exec("make " + install_target + " 2>&1") != 0) {
+          err("Install failed");
+          chdir(old_cwd.c_str());
+          return false;
+        }
+      } else {
+        warn("No Makefile found, skipping build");
+      }
     }
-    
+
     // Return to original directory
     chdir(old_cwd.c_str());
-    
+
     // Mark as installed
     Package ip = p;
     ip.installed = true;
     installed[p.name] = ip;
     save_installed();
-    
+
     ok("Installed " + p.name);
     return true;
-}
-bool parse_galactica_pkg(const std::string& pkg_path) {
+  }
+  bool parse_galactica_pkg(const std::string &pkg_path) {
     std::string content;
     if (!dl_str(GALACTICA_RAW_URL + pkg_path, content)) {
-        dbg("Failed to fetch: " + pkg_path);
-        return false;
+      dbg("Failed to fetch: " + pkg_path);
+      return false;
     }
-    
+
     Package p;
     p.source = PackageSource::GALACTICA;
-    
+
     std::istringstream iss(content);
     std::string line, section;
-    
+
     while (std::getline(iss, line)) {
-        // Trim whitespace
-        line.erase(0, line.find_first_not_of(" \t\r\n"));
-        line.erase(line.find_last_not_of(" \t\r\n") + 1);
-        
-        if (line.empty() || line[0] == '#') continue;
-        
-        // Section headers
-        if (line[0] == '[' && line.back() == ']') {
-            section = line.substr(1, line.length() - 2);
-            continue;
+      // Trim whitespace
+      line.erase(0, line.find_first_not_of(" \t\r\n"));
+      line.erase(line.find_last_not_of(" \t\r\n") + 1);
+
+      if (line.empty() || line[0] == '#')
+        continue;
+
+      // Section headers
+      if (line[0] == '[' && line.back() == ']') {
+        section = line.substr(1, line.length() - 2);
+        continue;
+      }
+
+      // Key-value pairs
+      size_t eq = line.find('=');
+      if (eq == std::string::npos)
+        continue;
+
+      std::string key = line.substr(0, eq);
+      std::string value = line.substr(eq + 1);
+
+      // Trim
+      key.erase(key.find_last_not_of(" \t") + 1);
+      value.erase(0, value.find_first_not_of(" \t"));
+
+      // Remove quotes
+      if (value.length() >= 2 && value[0] == '"' && value.back() == '"') {
+        value = value.substr(1, value.length() - 2);
+      }
+
+      if (section == "Package") {
+        if (key == "name")
+          p.name = value;
+        else if (key == "version")
+          p.version = value;
+        else if (key == "description")
+          p.description = value;
+        else if (key == "url")
+          p.url = value;
+        else if (key == "category")
+          p.category = value;
+      } else if (section == "Dependencies") {
+        if (key == "depends") {
+          // Parse space-separated dependencies
+          std::istringstream deps(value);
+          std::string dep;
+          while (deps >> dep) {
+            p.dependencies.push_back(dep);
+          }
         }
-        
-        // Key-value pairs
-        size_t eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        
-        std::string key = line.substr(0, eq);
-        std::string value = line.substr(eq + 1);
-        
-        // Trim
-        key.erase(key.find_last_not_of(" \t") + 1);
-        value.erase(0, value.find_first_not_of(" \t"));
-        
-        // Remove quotes
-        if (value.length() >= 2 && value[0] == '"' && value.back() == '"') {
-            value = value.substr(1, value.length() - 2);
-        }
-        
-        if (section == "Package") {
-            if (key == "name") p.name = value;
-            else if (key == "version") p.version = value;
-            else if (key == "description") p.description = value;
-            else if (key == "url") p.url = value;
-            else if (key == "category") p.category = value;
-        }
-        else if (section == "Dependencies") {
-            if (key == "depends") {
-                // Parse space-separated dependencies
-                std::istringstream deps(value);
-                std::string dep;
-                while (deps >> dep) {
-                    p.dependencies.push_back(dep);
-                }
-            }
-        }
-        else if (section == "Build") {
-            p.build_flags[key] = value;
-        }
-        else if (section == "Script") {
-            // Accumulate script lines
-            if (!p.build_script.empty()) p.build_script += "\n";
-            p.build_script += line;
-        }
+      } else if (section == "Build") {
+        p.build_flags[key] = value;
+      } else if (section == "Script") {
+        // Accumulate script lines
+        if (!p.build_script.empty())
+          p.build_script += "\n";
+        p.build_script += line;
+      }
     }
-    
+
     // Only add if we got essential info
     if (!p.name.empty() && !p.version.empty()) {
-        packages[p.name] = p;
-        dbg("Loaded Galactica package: " + p.name);
-        return true;
+      packages[p.name] = p;
+      dbg("Loaded Galactica package: " + p.name);
+      return true;
     }
-    
+
     return false;
-}
-bool sync_arch() {
+  }
+  bool sync_arch() {
     status("Syncing Arch databases...");
-    
+
     // Try each mirror until we get both repos successfully
     for (auto &mirror : ARCH_MIRRORS) {
-        bool all_repos_ok = true;
-        
-        for (auto &repo : ARCH_REPOS) {
-            std::string url = mirror + "/" + repo + "/os/x86_64/" + repo + ".db";
-            std::string file = db_cache_dir + "/" + repo + ".db";
-            
-            dbg("Downloading " + repo + " database from " + mirror);
-            
-            if (!dl_file(url, file)) {
-                dbg("Failed to download " + repo + " from " + mirror);
-                all_repos_ok = false;
-                break;
-            }
-            
-            dbg("Parsing " + repo + " database");
-            
-            if (!parse_arch_db_with_deps(file, repo)) {
-                dbg("Failed to parse " + repo + " database");
-                all_repos_ok = false;
-                break;
-            }
+      bool all_repos_ok = true;
+
+      for (auto &repo : ARCH_REPOS) {
+        std::string url = mirror + "/" + repo + "/os/x86_64/" + repo + ".db";
+        std::string file = db_cache_dir + "/" + repo + ".db";
+
+        dbg("Downloading " + repo + " database from " + mirror);
+
+        if (!dl_file(url, file)) {
+          dbg("Failed to download " + repo + " from " + mirror);
+          all_repos_ok = false;
+          break;
         }
-        
-        // If all repos downloaded and parsed successfully, we're done
-        if (all_repos_ok) {
-            ok("Successfully synced from " + mirror);
-            return true;
+
+        dbg("Parsing " + repo + " database");
+
+        if (!parse_arch_db_with_deps(file, repo)) {
+          dbg("Failed to parse " + repo + " database");
+          all_repos_ok = false;
+          break;
         }
-        
-        warn("Failed to sync all repos from " + mirror + ", trying next mirror...");
+      }
+
+      // If all repos downloaded and parsed successfully, we're done
+      if (all_repos_ok) {
+        ok("Successfully synced from " + mirror);
+        return true;
+      }
+
+      warn("Failed to sync all repos from " + mirror +
+           ", trying next mirror...");
     }
-    
+
     err("Failed to sync from all mirrors");
     return false;
-}
+  }
 
   bool extract_pkg(const std::string &pkg, const std::string &dest,
                    std::vector<std::string> *files = nullptr) {
@@ -1169,40 +1228,40 @@ public:
     curl_global_cleanup();
   }
 
-void sync() {
-    banner(); 
-    
+  void sync() {
+    banner();
+
     // Clear cache directory before syncing
     std::string cache_db_path = get_cache_dir() + "/db";
-    
+
     // Remove the cache/db directory if it exists
     std::error_code ec;
     if (std::filesystem::exists(cache_db_path, ec)) {
-			std::cout << "Removing old cache database..." << "\n" ;
-        if (std::filesystem::remove_all(cache_db_path, ec)) {
-            ok("Old cache removed");
-        } else {
-            warn("Failed to remove old cache: " + ec.message());
-        }
+      std::cout << "Removing old cache database..." << "\n";
+      if (std::filesystem::remove_all(cache_db_path, ec)) {
+        ok("Old cache removed");
+      } else {
+        warn("Failed to remove old cache: " + ec.message());
+      }
     }
-    
+
     // Fetch Galactica INDEX
-    fetch_galactica(); 
-    
+    fetch_galactica();
+
     // Load Galactica package definitions
     load_galactica_packages();
-    
+
     // Sync Arch databases
-    sync_arch(); 
-    
+    sync_arch();
+
     // Save and load
-    save_pkg_db(); 
+    save_pkg_db();
     load_installed();
-    
+
     ok("Sync complete");
     std::cout << "  " << packages.size() << " packages available\n";
     std::cout << "  " << modules.size() << " modules loaded\n";
-}
+  }
 
   void search(const std::string &q) {
     if (packages.empty())
@@ -1218,100 +1277,104 @@ void sync() {
     }
   }
 
- bool install(const std::string& name) {
+  bool install(const std::string &name) {
     load_installed();
-    if (packages.empty()) load_pkg_db();
-    
+    if (packages.empty())
+      load_pkg_db();
+
     // Check if already installed
-    if (installed.count(name)) { 
-        warn(name + " already installed"); 
-        return false; 
+    if (installed.count(name)) {
+      warn(name + " already installed");
+      return false;
     }
-    
+
     // Find package
     auto it = packages.find(name);
-    if (it == packages.end()) { 
-        err("Not found: " + name); 
-        return false; 
+    if (it == packages.end()) {
+      err("Not found: " + name);
+      return false;
     }
-    
-    const Package& pkg = it->second;
-    
+
+    const Package &pkg = it->second;
+
     // Handle based on source type
     if (pkg.source == PackageSource::GALACTICA) {
-        // Source-based installation
-        return install_galactica(pkg);
-    }
-    else if (pkg.source == PackageSource::ARCH_BINARY) {
-        // Binary installation with dependency resolution
-        status("Resolving dependencies for " + name + "...");
-        std::set<std::string> resolved;
-        std::set<std::string> visited;
-        
-        std::vector<std::string> install_order = resolve_dependencies(name, resolved, visited);
-        
-        if (install_order.empty()) {
-            err("Dependency resolution failed");
+      // Source-based installation
+      return install_galactica(pkg);
+    } else if (pkg.source == PackageSource::ARCH_BINARY) {
+      // Binary installation with dependency resolution
+      status("Resolving dependencies for " + name + "...");
+      std::set<std::string> resolved;
+      std::set<std::string> visited;
+
+      std::vector<std::string> install_order =
+          resolve_dependencies(name, resolved, visited);
+
+      if (install_order.empty()) {
+        err("Dependency resolution failed");
+        return false;
+      }
+
+      // Show installation plan
+      std::cout << "\n"
+                << CYAN << "Packages to install (" << install_order.size()
+                << "):" << RESET << "\n";
+      for (const auto &pkg_name : install_order) {
+        auto pkg_it = packages.find(pkg_name);
+        if (pkg_it != packages.end()) {
+          std::cout << "  " << pkg_name << " " << YELLOW
+                    << pkg_it->second.version << RESET << "\n";
+        }
+      }
+
+      // Calculate total download size
+      size_t total_size = 0;
+      for (const auto &pkg_name : install_order) {
+        auto pkg_it = packages.find(pkg_name);
+        if (pkg_it != packages.end()) {
+          total_size += pkg_it->second.size;
+        }
+      }
+
+      std::cout << "\n" << CYAN << "Total download size: " << RESET;
+      if (total_size < 1024) {
+        std::cout << total_size << " B\n";
+      } else if (total_size < 1024 * 1024) {
+        std::cout << (total_size / 1024.0) << " KB\n";
+      } else {
+        std::cout << (total_size / (1024.0 * 1024.0)) << " MB\n";
+      }
+
+      std::cout << "\nProceed with installation? [Y/n]: ";
+      std::string response;
+      std::getline(std::cin, response);
+
+      if (!response.empty() && response[0] != 'y' && response[0] != 'Y') {
+        std::cout << "Installation cancelled.\n";
+        return false;
+      }
+
+      // Install packages in dependency order
+      std::cout << "\n";
+      for (const auto &pkg_name : install_order) {
+        auto pkg_it = packages.find(pkg_name);
+        if (pkg_it != packages.end()) {
+          if (!install_arch(pkg_it->second)) {
+            err("Failed to install " + pkg_name);
             return false;
+          }
         }
-        
-        // Show installation plan
-        std::cout << "\n" << CYAN << "Packages to install (" << install_order.size() << "):" << RESET << "\n";
-        for (const auto& pkg_name : install_order) {
-            auto pkg_it = packages.find(pkg_name);
-            if (pkg_it != packages.end()) {
-                std::cout << "  " << pkg_name << " " << YELLOW << pkg_it->second.version << RESET << "\n";
-            }
-        }
-        
-        // Calculate total download size
-        size_t total_size = 0;
-        for (const auto& pkg_name : install_order) {
-            auto pkg_it = packages.find(pkg_name);
-            if (pkg_it != packages.end()) {
-                total_size += pkg_it->second.size;
-            }
-        }
-        
-        std::cout << "\n" << CYAN << "Total download size: " << RESET;
-        if (total_size < 1024) {
-            std::cout << total_size << " B\n";
-        } else if (total_size < 1024 * 1024) {
-            std::cout << (total_size / 1024.0) << " KB\n";
-        } else {
-            std::cout << (total_size / (1024.0 * 1024.0)) << " MB\n";
-        }
-        
-        std::cout << "\nProceed with installation? [Y/n]: ";
-        std::string response;
-        std::getline(std::cin, response);
-        
-        if (!response.empty() && response[0] != 'y' && response[0] != 'Y') {
-            std::cout << "Installation cancelled.\n";
-            return false;
-        }
-        
-        // Install packages in dependency order
-        std::cout << "\n";
-        for (const auto& pkg_name : install_order) {
-            auto pkg_it = packages.find(pkg_name);
-            if (pkg_it != packages.end()) {
-                if (!install_arch(pkg_it->second)) {
-                    err("Failed to install " + pkg_name);
-                    return false;
-                }
-            }
-        }
-        
-        ok("Successfully installed " + name + " with " + 
-           std::to_string(install_order.size()) + " package(s)");
-        
-        return true;
+      }
+
+      ok("Successfully installed " + name + " with " +
+         std::to_string(install_order.size()) + " package(s)");
+
+      return true;
     }
-    
+
     err("Unknown package source");
     return false;
-}
+  }
   bool uninstall(const std::string &name) { return uninstall_pkg(name); }
 
   void list() {

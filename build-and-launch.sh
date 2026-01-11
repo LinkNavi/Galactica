@@ -1001,7 +1001,7 @@ echo "[$(date '+%H:%M:%S')] Device permissions fixed" >> /var/log/airride/perms.
 exit 0
 EOFPERMS
     chmod +x "$TARGET_ROOT/sbin/fix-input-perms"
-sudo tee "$TARGET_ROOT/usr/bin/adduser" > /dev/null << 'EOFCREATEUSER'
+sudo tee "$TARGET_ROOT/usr/bin/makeuser" > /dev/null << 'EOFCREATEUSER'
 
 
 #!/bin/sh
@@ -1425,7 +1425,7 @@ dreamland sync || print_warning "Failed to sync package database (continuing any
 print_step 2 "Installing X11 packages"
 
 PACKAGES="xorg-server xorg-xinit util-linux xf86-input-evdev"
-OPTIONAL_PACKAGES="xterm twm xorg-xsetroot"
+OPTIONAL_PACKAGES="xterm ctwm xorg-xsetroot"
 
 print_info "Required packages: $PACKAGES"
 print_info "Optional packages: $OPTIONAL_PACKAGES"
@@ -1433,7 +1433,7 @@ echo ""
 
 for pkg in $PACKAGES; do
     print_info "Installing $pkg..."
-    if dreamland install "$pkg" 2>&1 | grep -q "installed\|already"; then
+    if dreamland install "$pkg" ; then
         print_success "$pkg installed"
     else
         print_error "Failed to install $pkg"
@@ -1443,7 +1443,7 @@ done
 
 print_info "Installing optional packages..."
 for pkg in $OPTIONAL_PACKAGES; do
-    if dreamland install "$pkg" 2>&1 | grep -q "installed\|already"; then
+    if dreamland install "$pkg" ; then
         print_success "$pkg installed"
     else
         print_warning "$pkg installation failed (optional)"
@@ -1739,7 +1739,7 @@ echo ""
 echo -e "${GREEN}Try running: ${YELLOW}startgui${NC}"
 echo ""
 EOFSETUPXORG
-
+chmod +x $TARGET_ROOT/sbin/setup-xorg
     # ============================================
     # NETWORK WATCHDOG
     # ============================================
