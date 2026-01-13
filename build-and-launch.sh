@@ -95,6 +95,130 @@ build_kernel() {
         make tinyconfig || make allnoconfig
         
         cat >> .config << 'EOF'
+# ============================================
+# WIRELESS CORE SUPPORT
+# ============================================
+CONFIG_WIRELESS=y
+CONFIG_WIRELESS_EXT=y
+CONFIG_WEXT_CORE=y
+CONFIG_WEXT_PROC=y
+CONFIG_WEXT_PRIV=y
+CONFIG_WEXT_SPY=y
+
+# cfg80211 wireless configuration API
+CONFIG_CFG80211=y
+CONFIG_CFG80211_WEXT=y
+CONFIG_CFG80211_DEFAULT_PS=y
+
+# nl80211 testmode command
+CONFIG_NL80211_TESTMODE=y
+
+# ============================================
+# MAC80211 STACK
+# ============================================
+CONFIG_MAC80211=y
+CONFIG_MAC80211_HAS_RC=y
+CONFIG_MAC80211_RC_MINSTREL=y
+CONFIG_MAC80211_RC_DEFAULT_MINSTREL=y
+CONFIG_MAC80211_RC_DEFAULT="minstrel_ht"
+CONFIG_MAC80211_LEDS=y
+
+# ============================================
+# WIRELESS DRIVERS (as modules)
+# ============================================
+
+# Intel WiFi (iwlwifi) - Very common in laptops
+CONFIG_IWLWIFI=m
+CONFIG_IWLDVM=m          # Intel Wireless WiFi DVM Firmware support
+CONFIG_IWLMVM=m          # Intel Wireless WiFi MVM Firmware support
+CONFIG_IWLWIFI_LEDS=y
+CONFIG_IWLWIFI_OPMODE_MODULAR=y
+
+# Atheros (ath9k) - Common in many devices
+CONFIG_ATH_COMMON=m
+CONFIG_ATH9K=m
+CONFIG_ATH9K_HW=m
+CONFIG_ATH9K_COMMON=m
+CONFIG_ATH9K_PCI=m
+CONFIG_ATH9K_LEDS=y
+
+# Realtek (rtl8192) - Common in USB adapters
+CONFIG_RTL8192CE=m
+CONFIG_RTL8192CU=m
+CONFIG_RTL8192DE=m
+CONFIG_RTL8192SE=m
+CONFIG_RTL8192C_COMMON=m
+
+# Broadcom (b43) - Common in older devices
+CONFIG_B43=m
+CONFIG_B43_PHY_N=y
+CONFIG_B43_PHY_LP=y
+CONFIG_B43_LEDS=y
+
+# Ralink/MediaTek (rt2x00) - USB adapters
+CONFIG_RT2X00=m
+CONFIG_RT2800USB=m
+CONFIG_RT2800PCI=m
+
+# ============================================
+# ADDITIONAL WIFI VENDOR SUPPORT
+# ============================================
+CONFIG_WLAN=y
+CONFIG_WLAN_VENDOR_ADMTEK=y
+CONFIG_WLAN_VENDOR_ATH=y
+CONFIG_WLAN_VENDOR_ATMEL=y
+CONFIG_WLAN_VENDOR_BROADCOM=y
+CONFIG_WLAN_VENDOR_INTEL=y
+CONFIG_WLAN_VENDOR_INTERSIL=y
+CONFIG_WLAN_VENDOR_MARVELL=y
+CONFIG_WLAN_VENDOR_MEDIATEK=y
+CONFIG_WLAN_VENDOR_RALINK=y
+CONFIG_WLAN_VENDOR_REALTEK=y
+CONFIG_WLAN_VENDOR_RSI=y
+CONFIG_WLAN_VENDOR_ZYDAS=y
+
+# ============================================
+# LED SUPPORT (for WiFi status LEDs)
+# ============================================
+CONFIG_LEDS_CLASS=y
+CONFIG_LEDS_TRIGGERS=y
+CONFIG_LEDS_TRIGGER_PHY=y
+
+# ============================================
+# RFKILL (WiFi hardware switches)
+# ============================================
+CONFIG_RFKILL=y
+CONFIG_RFKILL_INPUT=y
+CONFIG_RFKILL_LEDS=y
+
+# ============================================
+# POWER MANAGEMENT FOR WIRELESS
+# ============================================
+CONFIG_PM=y
+CONFIG_PM_SLEEP=y
+
+# ============================================
+# CRYPTO (required by WPA/WPA2)
+# ============================================
+CONFIG_CRYPTO=y
+CONFIG_CRYPTO_ARC4=y
+CONFIG_CRYPTO_ECB=y
+CONFIG_CRYPTO_CMAC=y
+CONFIG_CRYPTO_HMAC=y
+CONFIG_CRYPTO_SHA1=y
+CONFIG_CRYPTO_SHA256=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_CCM=y
+CONFIG_CRYPTO_GCM=y
+
+# ============================================
+# FIRMWARE LOADING
+# ============================================
+CONFIG_FW_LOADER=y
+CONFIG_FW_LOADER_USER_HELPER=y
+CONFIG_EXTRA_FIRMWARE=""
+
+		
 # Architecture
 CONFIG_64BIT=y
 CONFIG_X86_64=y
@@ -361,6 +485,94 @@ EOF
     
     [[ -f arch/x86/boot/bzImage ]] && print_success "Kernel built" || { print_error "Kernel build failed"; return 1; }
     cd ..
+}
+bundle_wifi_tools() {
+    print_step 9 12 "Bundle WiFi Tools (for bootstrapping)"
+    
+    print_info "Copying WiFi tools from host system..."
+    
+    # wpa_supplicant
+    if command -v wpa_supplicant &>/dev/null; then
+        cp "$(command -v wpa_supplicant)" "$TARGET_ROOT/usr/sbin/"
+        copy_libs "$(command -v wpa_supplicant)"
+        print_success "wpa_supplicant bundled"
+    else
+        print_warning "wpa_supplicant not found on host (WiFi won't work)"
+    fi
+    
+    # wpa_passphrase
+    if command -v wpa_passphrase &>/dev/null; then
+        cp "$(command -v wpa_passphrase)" "$TARGET_ROOT/usr/sbin/"
+        print_success "wpa_passphrase bundled"
+    fi
+    
+    # wpa_cli
+    if command -v wpa_cli &>/dev/null; then
+        cp "$(command -v wpa_cli)" "$TARGET_ROOT/usr/sbin/"
+        copy_libs "$(command -v wpa_cli)"
+        print_success "wpa_cli bundled"
+    fi
+    
+    # iw
+    if command -v iw &>/dev/null; then
+        cp "$(command -v iw)" "$TARGET_ROOT/usr/sbin/"
+        copy_libs "$(command -v iw)"
+        print_success "iw bundled"
+    else
+        print_warning "iw not found on host"
+    fi
+    
+    # dhclient
+    if command -v dhclient &>/dev/null; then
+        cp "$(command -v dhclient)" "$TARGET_ROOT/usr/sbin/"
+        copy_libs "$(command -v dhclient)"
+        print_success "dhclient bundled"
+        
+        # dhclient-script
+        for script in /sbin/dhclient-script /usr/sbin/dhclient-script; do
+            if [[ -f "$script" ]]; then
+                cp "$script" "$TARGET_ROOT/usr/sbin/"
+                chmod 755 "$TARGET_ROOT/usr/sbin/dhclient-script"
+                break
+            fi
+        done
+    fi
+    
+    # Create simple WiFi connection script
+    cat > "$TARGET_ROOT/usr/bin/wifi-connect" << 'EOFWIFI'
+#!/bin/sh
+# Simple WiFi connector - works with bundled tools
+[ "$(id -u)" -eq 0 ] || { echo "Must run as root"; exit 1; }
+
+# Find interface
+IFACE=$(ls /sys/class/net/ | grep -E '^wl' | head -1)
+[ -z "$IFACE" ] && { echo "No WiFi interface found"; exit 1; }
+
+# Get credentials
+SSID="${1:-$(read -p 'SSID: ' x; echo $x)}"
+PASSWORD="${2:-$(read -sp 'Password: ' x; echo $x; echo >&2)}"
+
+# Connect
+ip link set "$IFACE" up
+killall wpa_supplicant 2>/dev/null
+mkdir -p /etc/wpa_supplicant
+
+if [ -n "$PASSWORD" ]; then
+    wpa_passphrase "$SSID" "$PASSWORD" > /etc/wpa_supplicant/wpa_supplicant.conf
+else
+    echo "network={ssid=\"$SSID\" key_mgmt=NONE}" > /etc/wpa_supplicant/wpa_supplicant.conf
+fi
+
+wpa_supplicant -B -i "$IFACE" -c /etc/wpa_supplicant/wpa_supplicant.conf
+sleep 3
+dhclient "$IFACE" 2>/dev/null || udhcpc -i "$IFACE"
+
+IP=$(ip -4 addr show "$IFACE" | grep inet | awk '{print $2}')
+echo "Connected! IP: $IP"
+EOFWIFI
+    chmod 755 "$TARGET_ROOT/usr/bin/wifi-connect"
+    
+    print_success "WiFi tools bundled from host system"
 }
 
 build_poyo() {
@@ -2155,6 +2367,7 @@ main() {
     prepare_build_dir || exit 1
     install_components || exit 1
     install_essentials || exit 1
+	bundle_wifi_tools || true
     create_system_files || exit 1
     create_rootfs || exit 1
     create_launch_scripts
