@@ -1,5 +1,3 @@
-
-
 package main
 
 import (
@@ -52,7 +50,7 @@ func (m Model) viewWelcome() string {
 		prefix := "  "
 		if i == m.cursor {
 			style = selectedStyle
-			prefix = "▶ "
+			prefix = "> "
 		}
 		b.WriteString(center(prefix+style.Render(option), m.width))
 		b.WriteString("\n")
@@ -92,7 +90,7 @@ func (m Model) viewDiskSelect() string {
 			prefix := "  "
 			if i == m.cursor {
 				style = selectedStyle
-				prefix = "▶ "
+				prefix = "> "
 			}
 			diskStr := fmt.Sprintf("%s (%s) - %s", disk.Device, disk.SizeHuman, disk.Model)
 			b.WriteString(prefix + style.Render(diskStr))
@@ -129,7 +127,7 @@ func (m Model) viewPartition() string {
 		prefix := "  "
 		if i == m.cursor {
 			style = selectedStyle
-			prefix = "▶ "
+			prefix = "> "
 		}
 		b.WriteString(prefix + style.Render(option))
 		b.WriteString("\n")
@@ -175,7 +173,7 @@ func (m Model) viewUserSetup() string {
 	b.WriteString(grayStyle.Render("(Customization will be added in a future version)"))
 	b.WriteString("\n\n")
 
-	action := selectedStyle.Render("▶ Continue with installation")
+	action := selectedStyle.Render("> Continue with installation")
 	b.WriteString(action)
 
 	b.WriteString("\n\n")
@@ -219,14 +217,17 @@ func (m Model) viewInstall() string {
 
 	b.WriteString("\n")
 	
-	// Progress bar
+	// Progress bar with ASCII characters
 	totalSteps := len(m.installSteps)
 	progress := float64(m.installStep) / float64(totalSteps)
-	filled := int(progress * 20)
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", 20-filled)
+	barWidth := 30
+	filled := int(progress * float64(barWidth))
+	
+	// Use simple ASCII characters
+	bar := "[" + strings.Repeat("=", filled) + strings.Repeat("-", barWidth-filled) + "]"
 	percentage := int(progress * 100)
 	
-	b.WriteString(fmt.Sprintf("Progress: [%s] %d%%\n", bar, percentage))
+	b.WriteString(fmt.Sprintf("Progress: %s %d%%\n", bar, percentage))
 
 	b.WriteString("\n")
 	help := helpStyle.Render("Please wait...")
@@ -260,7 +261,7 @@ func (m Model) viewComplete() string {
 	b.WriteString(center(message, m.width))
 	b.WriteString("\n\n")
 
-	action := selectedStyle.Render("▶ Press Enter to exit")
+	action := selectedStyle.Render("> Press Enter to exit")
 	b.WriteString(center(action, m.width))
 
 	return b.String()

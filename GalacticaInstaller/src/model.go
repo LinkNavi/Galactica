@@ -108,10 +108,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.installError = msg.err
 			m.installing = false
+			return m, nil
 		}
-		if msg.step >= len(m.installSteps) {
-			m.screen = ScreenComplete
-			m.installing = false
+		// Keep ticking to get updates
+		if m.installing {
+			return m, installProgressTicker()
 		}
 		return m, nil
 		
