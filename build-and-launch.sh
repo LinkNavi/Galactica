@@ -1570,7 +1570,7 @@ echo ""
 
 EOFCREATEUSER
 
-sudo chmod 755 "$TARGET_ROOT/usr/bin/adduser"
+sudo chmod 755 "$TARGET_ROOT/usr/bin/makeuser"
 
 cat > "$TARGET_ROOT/sbin/setup-xorg" << 'EOFSETUPXORG'
 
