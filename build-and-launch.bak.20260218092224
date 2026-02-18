@@ -538,37 +538,37 @@ bundle_wifi_tools() {
         done
     fi
     
-    # WiFi connection script (uses wifi-start for reliability)
+    # Create simple WiFi connection script
     cat > "$TARGET_ROOT/usr/bin/wifi-connect" << 'EOFWIFI'
 #!/bin/sh
-# wifi-connect [ssid] [password]
+# Simple WiFi connector - works with bundled tools
 [ "$(id -u)" -eq 0 ] || { echo "Must run as root"; exit 1; }
 
-IFACE=$(ls /sys/class/net/ 2>/dev/null | grep -E '^wl' | head -1)
+# Find interface
+IFACE=$(ls /sys/class/net/ | grep -E '^wl' | head -1)
 [ -z "$IFACE" ] && { echo "No WiFi interface found"; exit 1; }
 
-SSID="$1"
-PASSWORD="$2"
-[ -z "$SSID" ]     && { printf "SSID: ";                     read -r SSID; }
-[ -z "$PASSWORD" ] && { printf "Password (blank=open): ";    read -rs PASSWORD; echo; }
+# Get credentials
+SSID="${1:-$(read -p 'SSID: ' x; echo $x)}"
+PASSWORD="${2:-$(read -sp 'Password: ' x; echo $x; echo >&2)}"
 
+# Connect
+ip link set "$IFACE" up
+killall wpa_supplicant 2>/dev/null
 mkdir -p /etc/wpa_supplicant
+
 if [ -n "$PASSWORD" ]; then
     wpa_passphrase "$SSID" "$PASSWORD" > /etc/wpa_supplicant/wpa_supplicant.conf
 else
-    cat > /etc/wpa_supplicant/wpa_supplicant.conf << EOF
-ctrl_interface=/var/run/wpa_supplicant
-update_config=1
-network={
-    ssid="$SSID"
-    key_mgmt=NONE
-}
-EOF
+    echo "network={ssid=\"$SSID\" key_mgmt=NONE}" > /etc/wpa_supplicant/wpa_supplicant.conf
 fi
 
-/sbin/wifi-start "$IFACE"
-IP=$(ip -4 addr show "$IFACE" 2>/dev/null | grep inet | awk '{print $2}')
-[ -n "$IP" ] && echo "Connected! IP: $IP" || echo "Failed to get IP"
+wpa_supplicant -B -i "$IFACE" -c /etc/wpa_supplicant/wpa_supplicant.conf
+sleep 3
+dhclient "$IFACE" 2>/dev/null || udhcpc -i "$IFACE"
+
+IP=$(ip -4 addr show "$IFACE" | grep inet | awk '{print $2}')
+echo "Connected! IP: $IP"
 EOFWIFI
     chmod 755 "$TARGET_ROOT/usr/bin/wifi-connect"
     
@@ -692,23 +692,6 @@ install_essentials() {
     for binary in "$TARGET_ROOT/sbin/airride" "$TARGET_ROOT/sbin/poyo" "$TARGET_ROOT/usr/bin/airridectl" "$TARGET_ROOT/usr/bin/dreamland"; do
         copy_libs "$binary"
     done
-
-    # ---- sudo / su (SUID binaries) ----
-    print_info "Installing sudo and su..."
-    for tool in sudo su; do
-        TOOL_PATH=$(command -v "$tool" 2>/dev/null || true)
-        if [[ -n "$TOOL_PATH" ]]; then
-            cp "$TOOL_PATH" "$TARGET_ROOT/usr/bin/$tool"
-            copy_libs "$TOOL_PATH"
-            sudo chown root:root "$TARGET_ROOT/usr/bin/$tool"
-            sudo chmod 4755    "$TARGET_ROOT/usr/bin/$tool"
-            print_success "$tool installed with SUID"
-        else
-            print_warning "$tool not found on host — skipping"
-        fi
-    done
-    # Symlink su into /bin as well (some scripts expect it there)
-    ln -sf ../usr/bin/su "$TARGET_ROOT/bin/su" 2>/dev/null || true
     
     for lib in libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 libcrypt.so.1 libgcc_s.so.1 libstdc++.so.6 libresolv.so.2 libnss_dns.so.2 libnss_files.so.2; do
         LIBPATH=$(find /lib* /usr/lib* -name "$lib" 2>/dev/null | head -1)
@@ -1035,15 +1018,19 @@ EOF
     # ============================================
     cat > "$TARGET_ROOT/sbin/network-setup" << 'EOFNET'
 #!/bin/sh
-# Galactica Network Setup
+# Galactica Network Setup - Robust version
+
 LOG="/var/log/airride/network.log"
 mkdir -p /var/log/airride /usr/share/udhcpc /run
-exec >> "$LOG" 2>&1
 
-log() { echo "[$(date '+%H:%M:%S')] $1"; }
+log() {
+    echo "[$(date '+%H:%M:%S')] $1" >> "$LOG" 2>&1
+    echo "$1"
+}
+
 log "=== Network Setup ==="
 
-# udhcpc script with proper subnet calculation
+# Create udhcpc script
 cat > /usr/share/udhcpc/default.script << 'DHCPSCRIPT'
 #!/bin/sh
 case "$1" in
@@ -1053,34 +1040,23 @@ case "$1" in
         ;;
     bound|renew)
         ip addr flush dev "$interface" 2>/dev/null
-        mask2prefix() {
-            local mask="$1" bits=0 IFS=.
-            for octet in $mask; do
-                case "$octet" in
-                    255) bits=$((bits+8));;
-                    254) bits=$((bits+7));;
-                    252) bits=$((bits+6));;
-                    248) bits=$((bits+5));;
-                    240) bits=$((bits+4));;
-                    224) bits=$((bits+3));;
-                    192) bits=$((bits+2));;
-                    128) bits=$((bits+1));;
-                esac
-            done
-            echo $bits
-        }
-        PREFIX=$(mask2prefix "${subnet:-255.255.255.0}")
+        case "$subnet" in
+            255.255.255.0) PREFIX=24 ;;
+            255.255.0.0)   PREFIX=16 ;;
+            *)             PREFIX=24 ;;
+        esac
         ip addr add "$ip/$PREFIX" dev "$interface"
         if [ -n "$router" ]; then
             while ip route del default 2>/dev/null; do :; done
             for gw in $router; do
-                ip route add default via "$gw" dev "$interface" && break
+                ip route add default via "$gw" dev "$interface"
+                break
             done
         fi
-        {
-            echo "# DHCP $(date)"
-            for ns in $dns 8.8.8.8 8.8.4.4; do echo "nameserver $ns"; done
-        } > /etc/resolv.conf
+        echo "# DHCP $(date)" > /etc/resolv.conf
+        for ns in $dns 8.8.8.8; do
+            echo "nameserver $ns" >> /etc/resolv.conf
+        done
         ;;
 esac
 exit 0
@@ -1090,38 +1066,43 @@ chmod +x /usr/share/udhcpc/default.script
 # Loopback
 ip link set lo up 2>/dev/null
 
-# Find wired interface
-WIRED_IFACE=""
-for iface in eth0 ens3 enp0s3 enp0s2 enp1s0; do
-    [ -e "/sys/class/net/$iface" ] && { WIRED_IFACE="$iface"; break; }
+# Find interface
+IFACE=""
+for i in eth0 ens3 enp0s3 enp0s2; do
+    [ -e "/sys/class/net/$i" ] && { IFACE="$i"; break; }
 done
+[ -z "$IFACE" ] && { log "No interface found"; exit 1; }
 
-# Find wireless interface
-WIFI_IFACE=$(ls /sys/class/net/ 2>/dev/null | grep -E '^wl' | head -1)
+log "Interface: $IFACE"
+echo "$IFACE" > /run/network-interface
 
-# Bring up wired with DHCP renewal enabled (-A 60 = renew every 60s)
-if [ -n "$WIRED_IFACE" ]; then
-    log "Wired: $WIRED_IFACE"
-    echo "$WIRED_IFACE" > /run/network-iface
-    ip link set "$WIRED_IFACE" up
-    sleep 1
-    kill $(cat /run/udhcpc-wired.pid 2>/dev/null) 2>/dev/null || true
-    killall udhcpc 2>/dev/null || true
-    sleep 0.5
-    udhcpc -i "$WIRED_IFACE" \
-           -s /usr/share/udhcpc/default.script \
-           -p /run/udhcpc-wired.pid \
-           -b -R -t 5 -T 3 -A 60 && log "DHCP bound on $WIRED_IFACE" \
-        || log "DHCP failed on $WIRED_IFACE"
+# Bring up
+ip link set "$IFACE" up
+sleep 1
+
+# Try DHCP
+DHCP_OK=0
+if command -v udhcpc >/dev/null 2>&1; then
+    killall udhcpc 2>/dev/null
+    udhcpc -i "$IFACE" -s /usr/share/udhcpc/default.script -n -q -t 5 -T 3 >> "$LOG" 2>&1 && DHCP_OK=1
 fi
 
-# Bring up WiFi if config exists
-if [ -n "$WIFI_IFACE" ] && [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-    log "WiFi: $WIFI_IFACE"
-    /sbin/wifi-start "$WIFI_IFACE"
+# Fallback static
+if [ "$DHCP_OK" = "0" ]; then
+    log "DHCP failed, using static"
+    ip addr flush dev "$IFACE" 2>/dev/null
+    ip addr add 10.0.2.15/24 dev "$IFACE"
+    while ip route del default 2>/dev/null; do :; done
+    ip route add default via 10.0.2.2 dev "$IFACE"
+    cat > /etc/resolv.conf << EOF
+nameserver 10.0.2.3
+nameserver 8.8.8.8
+EOF
 fi
 
-log "=== Network Setup Done ==="
+# Log result
+ip addr show "$IFACE" >> "$LOG" 2>&1
+log "=== Done ==="
 EOFNET
     chmod +x "$TARGET_ROOT/sbin/network-setup"
 
@@ -1976,98 +1957,21 @@ chmod +x $TARGET_ROOT/sbin/setup-xorg
     # ============================================
     cat > "$TARGET_ROOT/sbin/network-watchdog" << 'EOFWATCH'
 #!/bin/sh
-# Galactica Network Watchdog — monitors wired + WiFi independently
-LOG="/var/log/airride/network.log"
-mkdir -p /var/log/airride
-
-log() { echo "[$(date '+%H:%M:%S')] watchdog: $1" | tee -a "$LOG"; }
-
-PING_TARGET="8.8.8.8"
-CHECK_INTERVAL=30
-FAIL_THRESHOLD=3
-WIFI_CHECK_INTERVAL=10
-
-wired_failures=0
-wifi_failures=0
-last_wifi_check=0
-
-is_connected()  { ping -c 1 -W 3 "$PING_TARGET" >/dev/null 2>&1; }
-wifi_iface()    { ls /sys/class/net/ 2>/dev/null | grep -E '^wl' | head -1; }
-wpa_connected() {
-    local iface="$1"; [ -z "$iface" ] && return 1
-    [ "$(wpa_cli -i "$iface" status 2>/dev/null | grep '^wpa_state=' | cut -d= -f2)" = "COMPLETED" ]
-}
-
-restart_wired() {
-    log "Restarting wired DHCP..."
-    IFACE=$(cat /run/network-iface 2>/dev/null); [ -z "$IFACE" ] && return
-    kill $(cat /run/udhcpc-wired.pid 2>/dev/null) 2>/dev/null || true
-    sleep 1
-    ip link set "$IFACE" up
-    udhcpc -i "$IFACE" -s /usr/share/udhcpc/default.script \
-           -p /run/udhcpc-wired.pid -b -R -t 5 -T 3 -A 60 2>>"$LOG" || true
-}
-
-log "Watchdog started"
+# Network watchdog - auto-recovers broken network
+INTERVAL=30
+FAILURES=0
 
 while true; do
-    NOW=$(date +%s)
-    WIFI=$(wifi_iface)
-
-    # WiFi health check (runs more frequently than ping check)
-    if [ -n "$WIFI" ] && [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-        if [ $((NOW - last_wifi_check)) -ge $WIFI_CHECK_INTERVAL ]; then
-            last_wifi_check=$NOW
-            WPA_PID=$(cat /run/wpa_supplicant.pid 2>/dev/null)
-            # Check if wpa_supplicant process is still alive
-            if [ -n "$WPA_PID" ] && ! kill -0 "$WPA_PID" 2>/dev/null; then
-                log "wpa_supplicant died (pid $WPA_PID), recovering"
-                /sbin/wifi-start "$WIFI" 2>>"$LOG"
-                wifi_failures=0
-                sleep 5
-                continue
-            fi
-            # Check association state
-            if ! wpa_connected "$WIFI"; then
-                wifi_failures=$((wifi_failures + 1))
-                log "Not associated (fail $wifi_failures/$FAIL_THRESHOLD)"
-                if [ "$wifi_failures" -ge "$FAIL_THRESHOLD" ]; then
-                    log "Association lost, recovering WiFi"
-                    /sbin/wifi-start "$WIFI" 2>>"$LOG"
-                    wifi_failures=0
-                fi
-            else
-                # Associated but no IP?
-                if ! ip -4 addr show "$WIFI" 2>/dev/null | grep -q 'inet '; then
-                    log "Associated but no IP, restarting DHCP"
-                    kill $(cat /run/udhcpc-wifi.pid 2>/dev/null) 2>/dev/null || true
-                    udhcpc -i "$WIFI" -s /usr/share/udhcpc/default.script \
-                           -p /run/udhcpc-wifi.pid -b -R -t 5 -T 3 -A 60 2>>"$LOG" || true
-                else
-                    wifi_failures=0
-                fi
-            fi
-        fi
-    fi
-
-    sleep "$CHECK_INTERVAL"
-
-    # Connectivity check — only restart what's broken
-    if ! is_connected; then
-        wired_failures=$((wired_failures + 1))
-        log "No connectivity (fail $wired_failures/$FAIL_THRESHOLD)"
-        if [ "$wired_failures" -ge "$FAIL_THRESHOLD" ]; then
-            log "Connectivity lost, recovering..."
-            WIRED=$(cat /run/network-iface 2>/dev/null)
-            [ -n "$WIRED" ] && restart_wired
-            if [ -n "$WIFI" ] && [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-                wpa_connected "$WIFI" || /sbin/wifi-start "$WIFI" 2>>"$LOG"
-            fi
-            wired_failures=0
-            sleep 10
+    sleep "$INTERVAL"
+    
+    if ! ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
+        FAILURES=$((FAILURES + 1))
+        if [ "$FAILURES" -ge 2 ]; then
+            /sbin/network-setup >/dev/null 2>&1
+            FAILURES=0
         fi
     else
-        wired_failures=0
+        FAILURES=0
     fi
 done
 EOFWATCH
@@ -2128,7 +2032,7 @@ exec_start=/sbin/network-watchdog
 autostart=true
 parallel=true
 restart=always
-restart_delay=5
+restart_delay=10
 
 [Dependencies]
 after=network

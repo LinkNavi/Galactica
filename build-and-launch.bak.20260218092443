@@ -692,23 +692,6 @@ install_essentials() {
     for binary in "$TARGET_ROOT/sbin/airride" "$TARGET_ROOT/sbin/poyo" "$TARGET_ROOT/usr/bin/airridectl" "$TARGET_ROOT/usr/bin/dreamland"; do
         copy_libs "$binary"
     done
-
-    # ---- sudo / su (SUID binaries) ----
-    print_info "Installing sudo and su..."
-    for tool in sudo su; do
-        TOOL_PATH=$(command -v "$tool" 2>/dev/null || true)
-        if [[ -n "$TOOL_PATH" ]]; then
-            cp "$TOOL_PATH" "$TARGET_ROOT/usr/bin/$tool"
-            copy_libs "$TOOL_PATH"
-            sudo chown root:root "$TARGET_ROOT/usr/bin/$tool"
-            sudo chmod 4755    "$TARGET_ROOT/usr/bin/$tool"
-            print_success "$tool installed with SUID"
-        else
-            print_warning "$tool not found on host — skipping"
-        fi
-    done
-    # Symlink su into /bin as well (some scripts expect it there)
-    ln -sf ../usr/bin/su "$TARGET_ROOT/bin/su" 2>/dev/null || true
     
     for lib in libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 libcrypt.so.1 libgcc_s.so.1 libstdc++.so.6 libresolv.so.2 libnss_dns.so.2 libnss_files.so.2; do
         LIBPATH=$(find /lib* /usr/lib* -name "$lib" 2>/dev/null | head -1)
