@@ -204,7 +204,12 @@ for iface in eth0 ens3 enp0s3 enp0s2; do
         break
     fi
 done
-
+# Mount the ISO (cdrom) to access galactica-build
+mkdir -p /cdrom /galactica-build
+for dev in /dev/sr0 /dev/sr1 /dev/cdrom; do
+    mount -t iso9660 -o ro "$dev" /cdrom 2>/dev/null && break
+done
+mount --bind /cdrom/galactica-build /galactica-build 2>/dev/null || true
 # Set terminal
 export TERM=linux
 export HOME=/root
@@ -247,19 +252,26 @@ assemble_iso_root() {
         cp "$KERNEL_SRC" "$ISO_ROOT/boot/vmlinuz"
         ok "Kernel copied from $KERNEL_SRC"
     else
-        # Fallback: use host kernel
         HOST_KERNEL=$(find /boot -name "vmlinuz*" 2>/dev/null | sort -V | tail -1)
         if [[ -n "$HOST_KERNEL" ]]; then
             cp "$HOST_KERNEL" "$ISO_ROOT/boot/vmlinuz"
             warn "Using host kernel: $HOST_KERNEL"
-            warn "This ISO should only be used for testing without a Galactica kernel"
         else
             err "No kernel found. Build Galactica first."
             exit 1
         fi
     fi
 
-    # Initrd
+    # Embed galactica-build into ISO root (NOT initrd — too large for RAM)
+    if [[ -d "$GALACTICA_BUILD" ]]; then
+        info "Embedding galactica-build into ISO..."
+        cp -a "$GALACTICA_BUILD" "$ISO_ROOT/galactica-build"
+        ok "galactica-build embedded ($(du -sh "$ISO_ROOT/galactica-build" | cut -f1))"
+    else
+        err "galactica-build not found — run build-and-launch.sh first"
+        exit 1
+    fi
+
     cp "$BUILD_DIR/initrd.img" "$ISO_ROOT/boot/initrd.img"
 
     # GRUB config

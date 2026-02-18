@@ -11,10 +11,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const (
-	MOUNT_POINT = "/mnt/galactica"
-	SOURCE_DIR  = "/home/kirby/Programming/Galactica/galactica-build/" // Where your galactica-build is
-)
+const MOUNT_POINT = "/mnt/galactica"
+
+func getSourceDir() string {
+	if env := os.Getenv("GALACTICA_SOURCE"); env != "" {
+		return env
+	}
+	if _, err := os.Stat("/galactica-build"); err == nil {
+		return "/galactica-build"
+	}
+	if _, err := os.Stat("./galactica-build"); err == nil {
+		return "./galactica-build"
+	}
+	return "/galactica-build"
+}
 
 // InstallProgressMsg is sent during installation
 type InstallProgressMsg struct {
@@ -264,8 +274,8 @@ func MountFilesystems(device string) error {
 // InstallBaseSystem copies the base system files
 func InstallBaseSystem() error {
 	// Check if source directory exists
-	if _, err := os.Stat(SOURCE_DIR); os.IsNotExist(err) {
-		return fmt.Errorf("source directory not found: %s (you need to build Galactica first)", SOURCE_DIR)
+	if _, err := os.Stat(getSourceDir()); os.IsNotExist(err) {
+		return fmt.Errorf("source directory not found: %s (you need to build Galactica first)", getSourceDir())
 	}
 
 	// Use rsync to copy everything
@@ -275,7 +285,7 @@ func InstallBaseSystem() error {
 		"--exclude=/proc/*",
 		"--exclude=/sys/*",
 		"--exclude=/run/*",
-		SOURCE_DIR+"/",
+		getSourceDir()+"/",
 		MOUNT_POINT+"/")
 
 	output, err := cmd.CombinedOutput()
@@ -288,7 +298,7 @@ func InstallBaseSystem() error {
 
 // InstallKernel copies the kernel to /boot
 func InstallKernel() error {
-	kernelSrc := filepath.Join(SOURCE_DIR, "boot", "vmlinuz-galactica")
+	kernelSrc := filepath.Join(getSourceDir(), "boot", "vmlinuz-galactica")
 	kernelDst := filepath.Join(MOUNT_POINT, "boot", "vmlinuz-galactica")
 
 	// Check if kernel exists
@@ -303,7 +313,7 @@ func InstallKernel() error {
 	}
 
 	// Copy kernel modules if they exist
-	modulesSrc := filepath.Join(SOURCE_DIR, "lib", "modules")
+	modulesSrc := filepath.Join(getSourceDir(), "lib", "modules")
 	if _, err := os.Stat(modulesSrc); err == nil {
 		modulesDst := filepath.Join(MOUNT_POINT, "lib", "modules")
 		cmd = exec.Command("cp", "-r", modulesSrc, modulesDst)
