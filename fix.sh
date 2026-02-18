@@ -1,15 +1,16 @@
-#!/bin/bash
-# Update SOURCE_DIR in install.go to current directory
+LOOP=$(sudo losetup -fP --show GalacticaInstaller/test-disk.img)
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_GO="$SCRIPT_DIR/GalacticaInstaller/src/install.go"
+# Check boot partition
+sudo mount ${LOOP}p1 /mnt/gboot
+ls -la /mnt/gboot
+cat /mnt/gboot/grub/grub.cfg
+sudo umount /mnt/gboot
 
-if [ ! -f "$INSTALL_GO" ]; then
-    echo "Error: install.go not found at $INSTALL_GO"
-    exit 1
-fi
+# Check root partition
+sudo mkdir -p /mnt/groot
+sudo mount ${LOOP}p3 /mnt/groot
+ls -la /mnt/groot
+ls -la /mnt/groot/sbin/
+sudo umount /mnt/groot
 
-# Update SOURCE_DIR
-sed -i "s|SOURCE_DIR.*=.*\"/.*\"|SOURCE_DIR  = \"$SCRIPT_DIR/galactica-build\"|" "$INSTALL_GO"
-
-echo "Updated SOURCE_DIR in install.go to: $SCRIPT_DIR/galactica-build"
+sudo losetup -d $LOOP

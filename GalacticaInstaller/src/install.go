@@ -340,62 +340,52 @@ func ConfigureSystem(hostname string) error {
 	return nil
 }
 
-// InstallBootloader installs and configures extlinux
 func InstallBootloader(device string) error {
-	bootDir := filepath.Join(MOUNT_POINT, "boot")
 	rootPart := getPartitionPath(device, 3)
 
-	// Install extlinux
-	cmd := exec.Command("extlinux", "--install", bootDir)
-	if err := cmd.Run(); err != nil {
-		// Try with syslinux if extlinux fails
-		cmd = exec.Command("syslinux", "--install", bootDir)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to install bootloader (tried extlinux and syslinux): %w", err)
-		}
+	cmd := exec.Command("grub-install",
+		"--target=i386-pc",
+		"--boot-directory=/mnt/galactica/boot",
+		"--recheck",
+		device,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("grub-install failed: %w (output: %s)", err, string(output))
 	}
 
-	// Write MBR
-	mbrPaths := []string{
-		"/usr/lib/syslinux/mbr/mbr.bin",
-		"/usr/share/syslinux/mbr.bin",
-		"/usr/lib/syslinux/bios/mbr.bin",
-	}
-
-	var mbrPath string
-	for _, path := range mbrPaths {
-		if _, err := os.Stat(path); err == nil {
-			mbrPath = path
+	// Wait for blkid to see the freshly formatted partition
+	var rootUUID string
+	for i := 0; i < 5; i++ {
+		uuid, err := getUUID(rootPart)
+		if err == nil && uuid != "" {
+			rootUUID = uuid
 			break
 		}
+		time.Sleep(1 * time.Second)
+	}
+	if rootUUID == "" {
+		return fmt.Errorf("could not get UUID for %s", rootPart)
 	}
 
-	if mbrPath == "" {
-		return fmt.Errorf("MBR boot sector not found (tried: %v)", mbrPaths)
-	}
+	configPath := filepath.Join(MOUNT_POINT, "boot", "grub", "grub.cfg")
+	config := fmt.Sprintf(`serial --unit=0 --speed=115200
+terminal_input serial console
+terminal_output serial console
 
-	cmd = exec.Command("dd", "if="+mbrPath, "of="+device, "bs=440", "count=1")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to write MBR: %w", err)
-	}
+set timeout=5
+set default=0
 
-	// Create extlinux configuration
-	configPath := filepath.Join(bootDir, "extlinux.conf")
-	config := fmt.Sprintf(`DEFAULT galactica
-PROMPT 0
-TIMEOUT 50
+menuentry "Galactica Linux" {
+    linux /vmlinuz-galactica root=UUID=%s rw quiet console=ttyS0,115200
+}
 
-LABEL galactica
-    LINUX /vmlinuz-galactica
-    APPEND root=%s rw quiet
-
-LABEL recovery
-    LINUX /vmlinuz-galactica
-    APPEND root=%s rw init=/bin/sh
-`, rootPart, rootPart)
+menuentry "Galactica Linux (recovery)" {
+    linux /vmlinuz-galactica root=UUID=%s rw init=/bin/sh console=ttyS0,115200
+}
+`, rootUUID, rootUUID)
 
 	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
-		return fmt.Errorf("failed to write bootloader config: %w", err)
+		return fmt.Errorf("failed to write grub.cfg: %w", err)
 	}
 
 	return nil
@@ -403,7 +393,6 @@ LABEL recovery
 
 // SetupUsers creates users and sets passwords
 func SetupUsers(rootPassword, username, userPassword string) error {
-	// Generate password hashes
 	rootHash, err := generatePasswordHash(rootPassword)
 	if err != nil {
 		return fmt.Errorf("failed to generate root password: %w", err)
@@ -414,29 +403,24 @@ func SetupUsers(rootPassword, username, userPassword string) error {
 		return fmt.Errorf("failed to generate user password: %w", err)
 	}
 
-	// Write passwd file
 	passwdPath := filepath.Join(MOUNT_POINT, "etc", "passwd")
 	passwd := fmt.Sprintf(`root:x:0:0:root:/root:/bin/sh
 %s:x:1000:1000:%s:/home/%s:/bin/sh
 nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
 `, username, username, username)
-
 	if err := os.WriteFile(passwdPath, []byte(passwd), 0644); err != nil {
 		return fmt.Errorf("failed to write passwd: %w", err)
 	}
 
-	// Write shadow file
 	shadowPath := filepath.Join(MOUNT_POINT, "etc", "shadow")
 	shadow := fmt.Sprintf(`root:%s:19000:0:99999:7:::
 %s:%s:19000:0:99999:7:::
 nobody:*:19000:0:99999:7:::
 `, rootHash, username, userHash)
-
 	if err := os.WriteFile(shadowPath, []byte(shadow), 0600); err != nil {
 		return fmt.Errorf("failed to write shadow: %w", err)
 	}
 
-	// Write group file
 	groupPath := filepath.Join(MOUNT_POINT, "etc", "group")
 	group := fmt.Sprintf(`root:x:0:
 tty:x:5:%s
@@ -447,26 +431,38 @@ wheel:x:10:%s
 %s:x:1000:
 nogroup:x:65534:
 `, username, username, username, username, username, username)
-
 	if err := os.WriteFile(groupPath, []byte(group), 0644); err != nil {
 		return fmt.Errorf("failed to write group: %w", err)
 	}
 
-	// Create user home directory
 	homeDir := filepath.Join(MOUNT_POINT, "home", username)
 	if err := os.MkdirAll(homeDir, 0755); err != nil {
 		return fmt.Errorf("failed to create home directory: %w", err)
 	}
-
-	// Set ownership (UID 1000, GID 1000)
 	if err := os.Chown(homeDir, 1000, 1000); err != nil {
 		return fmt.Errorf("failed to set home ownership: %w", err)
 	}
 
-	return nil
-}
+	// sudoers
+	os.MkdirAll(filepath.Join(MOUNT_POINT, "etc", "sudoers.d"), 0750)
+	sudoers := fmt.Sprintf(`root ALL=(ALL:ALL) ALL
+%s ALL=(ALL:ALL) ALL
+%%wheel ALL=(ALL:ALL) ALL
+`, username)
+	if err := os.WriteFile(filepath.Join(MOUNT_POINT, "etc", "sudoers"), []byte(sudoers), 0440); err != nil {
+		return fmt.Errorf("failed to write sudoers: %w", err)
+	}
 
-// generatePasswordHash generates a SHA-512 password hash
+	// suid bits
+	for _, bin := range []string{"/bin/su", "/usr/bin/sudo", "/bin/mount", "/bin/umount"} {
+		path := filepath.Join(MOUNT_POINT, bin)
+		if _, err := os.Stat(path); err == nil {
+			os.Chmod(path, 0755|os.ModeSetuid)
+		}
+	}
+
+	return nil
+}// generatePasswordHash generates a SHA-512 password hash
 func generatePasswordHash(password string) (string, error) {
 	cmd := exec.Command("openssl", "passwd", "-6", "-salt", "galactica", password)
 	output, err := cmd.Output()

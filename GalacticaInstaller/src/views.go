@@ -5,21 +5,17 @@ import (
 	"strings"
 )
 
-// viewWelcome shows the welcome screen
 func (m Model) viewWelcome() string {
 	var b strings.Builder
 
-	// Center the logo
 	logo := m.renderLogo()
 	b.WriteString(logo)
 	b.WriteString("\n\n")
 
-	// Subtitle
 	subtitle := subtitleStyle.Render("Minimal Linux Distribution - Version 0.2")
 	b.WriteString(center(subtitle, m.width))
 	b.WriteString("\n\n")
 
-	// Testing mode warning
 	if TESTING_MODE {
 		testWarning := errorStyle.Render("⚠ TESTING MODE - Only loop devices will be shown")
 		b.WriteString(center(testWarning, m.width))
@@ -29,7 +25,6 @@ func (m Model) viewWelcome() string {
 		b.WriteString("\n\n")
 	}
 
-	// Welcome message
 	welcome := "Welcome to the Galactica installer!"
 	b.WriteString(center(welcome, m.width))
 	b.WriteString("\n\n")
@@ -39,7 +34,6 @@ func (m Model) viewWelcome() string {
 	b.WriteString(center(description, m.width))
 	b.WriteString("\n\n\n")
 
-	// Options
 	options := []string{
 		"Install Galactica Linux",
 		"Exit",
@@ -56,7 +50,6 @@ func (m Model) viewWelcome() string {
 		b.WriteString("\n")
 	}
 
-	// Help text
 	b.WriteString("\n\n")
 	help := helpStyle.Render("Use ↑/↓ or j/k to move, Enter to select, Esc to go back, q to quit")
 	b.WriteString(center(help, m.width))
@@ -64,7 +57,6 @@ func (m Model) viewWelcome() string {
 	return b.String()
 }
 
-// viewDiskSelect shows disk selection screen
 func (m Model) viewDiskSelect() string {
 	var b strings.Builder
 
@@ -75,13 +67,13 @@ func (m Model) viewDiskSelect() string {
 	info := "Choose the disk where Galactica will be installed."
 	b.WriteString(info)
 	b.WriteString("\n")
-	
+
 	warning := errorStyle.Render("⚠ WARNING: All data on the selected disk will be erased!")
 	b.WriteString(warning)
 	b.WriteString("\n\n")
 
 	b.WriteString("Available disks:\n\n")
-	
+
 	if len(m.diskInfo) == 0 {
 		b.WriteString(errorStyle.Render("No disks found!"))
 	} else {
@@ -105,7 +97,6 @@ func (m Model) viewDiskSelect() string {
 	return boxStyle.Render(b.String())
 }
 
-// viewPartition shows partitioning screen
 func (m Model) viewPartition() string {
 	var b strings.Builder
 
@@ -133,9 +124,6 @@ func (m Model) viewPartition() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
-	
-	// Show what automatic partitioning will create
 	if m.cursor == 0 {
 		b.WriteString("\n")
 		b.WriteString(grayStyle.Render("Automatic layout:"))
@@ -152,7 +140,6 @@ func (m Model) viewPartition() string {
 	return boxStyle.Render(b.String())
 }
 
-// viewUserSetup shows user creation screen
 func (m Model) viewUserSetup() string {
 	var b strings.Builder
 
@@ -160,30 +147,60 @@ func (m Model) viewUserSetup() string {
 	b.WriteString(title)
 	b.WriteString("\n\n")
 
-	info := "Set up your user account and passwords."
-	b.WriteString(info)
-	b.WriteString("\n\n")
+	// Render each input field
+	for i := InputField(0); i < FieldCount; i++ {
+		label := fieldLabels[i]
+		value := m.fieldValues[i]
+		active := m.activeField == i
 
-	// For now, show defaults (we'll add input fields later)
-	b.WriteString(fmt.Sprintf("Hostname:           %s\n", m.hostname))
-	b.WriteString("Root password:      galactica (default)\n")
-	b.WriteString("Username:           user\n")
-	b.WriteString("User password:      user\n")
+		// Mask password fields
+		displayVal := value
+		if m.fieldMasked[i] && len(value) > 0 {
+			displayVal = strings.Repeat("•", len(value))
+		}
+
+		// Add cursor if active
+		if active {
+			displayVal = displayVal + "█"
+		}
+
+		// Pad to fixed width for consistent box look
+		const fieldWidth = 30
+		if len(displayVal) < fieldWidth {
+			displayVal = displayVal + strings.Repeat(" ", fieldWidth-len(displayVal))
+		}
+
+		var labelStr string
+		var inputStr string
+
+		if active {
+			labelStr = selectedStyle.Render("> " + label + ":")
+			inputStr = inProgressStyle.Render("[" + displayVal + "]")
+		} else {
+			labelStr = normalStyle.Render("  " + label + ":")
+			inputStr = grayStyle.Render("[" + displayVal + "]")
+		}
+
+		b.WriteString(fmt.Sprintf("%-28s  %s\n", labelStr, inputStr))
+	}
+
+	// Error message
 	b.WriteString("\n")
-	b.WriteString(grayStyle.Render("(Customization will be added in a future version)"))
-	b.WriteString("\n\n")
+	if m.userSetupErr != "" {
+		b.WriteString(errorStyle.Render("✗ " + m.userSetupErr))
+		b.WriteString("\n")
+	}
 
-	action := selectedStyle.Render("> Continue with installation")
-	b.WriteString(action)
-
-	b.WriteString("\n\n")
-	help := helpStyle.Render("Enter: Continue | Esc: Back")
+	b.WriteString("\n")
+	help := helpStyle.Render("Tab/↑↓: Navigate fields | Enter: Next/Confirm | Esc: Back")
 	b.WriteString(help)
+	b.WriteString("\n")
+	hint := grayStyle.Render("Press Enter on the last field to start installation")
+	b.WriteString(hint)
 
 	return boxStyle.Render(b.String())
 }
 
-// viewInstall shows installation progress
 func (m Model) viewInstall() string {
 	var b strings.Builder
 
@@ -201,7 +218,7 @@ func (m Model) viewInstall() string {
 	}
 
 	b.WriteString("Installing Galactica Linux...\n\n")
-	
+
 	for i, task := range m.installSteps {
 		var status string
 		if i < m.installStep {
@@ -216,31 +233,25 @@ func (m Model) viewInstall() string {
 	}
 
 	b.WriteString("\n")
-	
-	// Progress bar with ASCII characters
+
 	totalSteps := len(m.installSteps)
 	progress := float64(m.installStep) / float64(totalSteps)
 	barWidth := 30
 	filled := int(progress * float64(barWidth))
-	
-	// Use simple ASCII characters
+
 	bar := "[" + strings.Repeat("=", filled) + strings.Repeat("-", barWidth-filled) + "]"
 	percentage := int(progress * 100)
-	
-	b.WriteString(fmt.Sprintf("Progress: %s %d%%\n", bar, percentage))
 
+	b.WriteString(fmt.Sprintf("Progress: %s %d%%\n", bar, percentage))
 	b.WriteString("\n")
-	help := helpStyle.Render("Please wait...")
-	b.WriteString(help)
+	b.WriteString(helpStyle.Render("Please wait..."))
 
 	return boxStyle.Render(b.String())
 }
 
-// viewComplete shows completion screen
 func (m Model) viewComplete() string {
 	var b strings.Builder
 
-	// Success message
 	success := successStyle.Render("✓ Installation Complete!")
 	b.WriteString(center(success, m.width))
 	b.WriteString("\n\n\n")
@@ -250,9 +261,6 @@ func (m Model) viewComplete() string {
 		fmt.Sprintf("  • Hostname: %s\n", m.hostname) +
 		fmt.Sprintf("  • User: %s\n", m.username) +
 		fmt.Sprintf("  • Disk: %s\n\n", m.selectedDisk) +
-		"Default credentials:\n" +
-		"  • root / galactica\n" +
-		"  • user / user\n\n" +
 		"Next steps:\n" +
 		"  1. Remove installation media\n" +
 		"  2. Reboot your computer\n" +
@@ -267,7 +275,6 @@ func (m Model) viewComplete() string {
 	return b.String()
 }
 
-// renderLogo returns the Galactica ASCII logo
 func (m Model) renderLogo() string {
 	logo := `
   ________       .__                 __  .__               
@@ -281,13 +288,11 @@ func (m Model) renderLogo() string {
 	return center(styledLogo, m.width)
 }
 
-// center centers text in the terminal
 func center(s string, width int) string {
 	lines := strings.Split(s, "\n")
 	var centered strings.Builder
-	
+
 	for _, line := range lines {
-		// Remove ANSI codes for length calculation
 		cleanLine := stripAnsi(line)
 		padding := (width - len(cleanLine)) / 2
 		if padding > 0 {
@@ -296,16 +301,14 @@ func center(s string, width int) string {
 		centered.WriteString(line)
 		centered.WriteString("\n")
 	}
-	
+
 	return strings.TrimRight(centered.String(), "\n")
 }
 
-// stripAnsi removes ANSI escape codes for length calculation
 func stripAnsi(s string) string {
-	// Simple ANSI stripper (good enough for centering)
 	inEscape := false
 	var result strings.Builder
-	
+
 	for _, r := range s {
 		if r == '\x1b' {
 			inEscape = true
@@ -319,6 +322,6 @@ func stripAnsi(s string) string {
 		}
 		result.WriteRune(r)
 	}
-	
+
 	return result.String()
 }
