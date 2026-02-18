@@ -7,4 +7,4 @@ autostart=true
 parallel=true
 
 [Dependencies]
-after=hostname,input-perms
+after=hostname

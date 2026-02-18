@@ -1,0 +1,39 @@
+services:
+  galactica:
+    build:
+      context: .
+      target: runtime
+    container_name: galactica-test
+    hostname: galactica
+    privileged: true          # needed for /proc /sys mounts in AirRide
+    volumes:
+      - ./docker/services:/etc/airride/services:ro
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+  # Test AirRide in isolation (no PID 1 behavior)
+  airride-test:
+    build:
+      context: .
+      target: runtime
+    container_name: airride-test
+    hostname: galactica-airride
+    privileged: true
+    command: /sbin/airride
+    volumes:
+      - ./docker/services:/etc/airride/services:ro
+      - airride-logs:/var/log/airride
+
+  # Test Dreamland only
+  dreamland-test:
+    build:
+      context: .
+      target: runtime
+    container_name: dreamland-test
+    command: /usr/bin/dreamland list
+    environment:
+      - HOME=/root
+
+volumes:
+  airride-logs:

@@ -874,51 +874,42 @@ install_essentials() {
 
 create_system_files() {
     print_step 9 11 "Create System Configuration"
-    
-    # Device nodes
+
+    # ─── Device nodes ───────────────────────────────────────────────
     cd "$TARGET_ROOT/dev"
-    sudo mknod -m 666 null c 1 3 2>/dev/null || true
-    sudo mknod -m 666 zero c 1 5 2>/dev/null || true
-    sudo mknod -m 666 random c 1 8 2>/dev/null || true
-    sudo mknod -m 666 urandom c 1 9 2>/dev/null || true
-    sudo mknod -m 600 console c 5 1 2>/dev/null || true
-    sudo mknod -m 666 tty c 5 0 2>/dev/null || true
-    
-    # TTY devices with proper group ownership for X11
+    sudo mknod -m 666 null    c 1 3  2>/dev/null || true
+    sudo mknod -m 666 zero    c 1 5  2>/dev/null || true
+    sudo mknod -m 666 random  c 1 8  2>/dev/null || true
+    sudo mknod -m 666 urandom c 1 9  2>/dev/null || true
+    sudo mknod -m 600 console c 5 1  2>/dev/null || true
+    sudo mknod -m 666 tty     c 5 0  2>/dev/null || true
+    sudo mknod -m 666 ptmx    c 5 2  2>/dev/null || true
+
     for i in 0 1 2 3 4 5 6; do
         sudo mknod -m 660 "tty$i" c 4 "$i" 2>/dev/null || true
-        sudo chown root:tty "tty$i" 2>/dev/null || true
+        sudo chown root:tty "tty$i"          2>/dev/null || true
     done
-    
     sudo mknod -m 660 ttyS0 c 4 64 2>/dev/null || true
-    sudo chown root:tty ttyS0 2>/dev/null || true
-    
-    # Framebuffer and DRI devices with proper permissions
+    sudo chown root:tty ttyS0              2>/dev/null || true
+
     sudo mknod -m 666 fb0 c 29 0 2>/dev/null || true
     sudo mkdir -p dri
-    sudo mknod -m 666 dri/card0 c 226 0 2>/dev/null || true
+    sudo mknod -m 666 dri/card0      c 226 0   2>/dev/null || true
     sudo mknod -m 666 dri/renderD128 c 226 128 2>/dev/null || true
-    sudo chown -R root:video dri 2>/dev/null || true
-    
-    # Input devices for X11
+
     sudo mkdir -p input
     for i in $(seq 0 10); do
         sudo mknod -m 660 "input/event$i" c 13 "$((64 + i))" 2>/dev/null || true
-        sudo chown root:input "input/event$i" 2>/dev/null || true
     done
     sudo mknod -m 660 input/mice c 13 63 2>/dev/null || true
-    sudo chown root:input input/mice 2>/dev/null || true
-    
     cd - > /dev/null
-    
-    # ============================================
-    # USER AND GROUP DATABASE WITH X11 GROUPS
-    # ============================================
+
+    # ─── Users and groups ───────────────────────────────────────────
     cat > "$TARGET_ROOT/etc/passwd" << 'EOF'
 root:x:0:0:root:/root:/bin/sh
 nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
 EOF
-    
+
     cat > "$TARGET_ROOT/etc/group" << 'EOF'
 root:x:0:root
 tty:x:5:root
@@ -926,76 +917,31 @@ video:x:44:root
 input:x:104:root
 audio:x:29:root
 wheel:x:10:root
+storage:x:11:root
 nogroup:x:65534:
 EOF
-    
-    # Generate password hash for 'galactica'
+
+    local HASH
     HASH=$(openssl passwd -6 -salt "galactica" "galactica")
     cat > "$TARGET_ROOT/etc/shadow" << EOF
 root:${HASH}:19000:0:99999:7:::
 nobody:*:19000:0:99999:7:::
 EOF
     chmod 600 "$TARGET_ROOT/etc/shadow"
-    
-    # ============================================
-    # UDEV RULES FOR AUTOMATIC PERMISSIONS
-    # ============================================
-    mkdir -p "$TARGET_ROOT/etc/udev/rules.d"
-    
-    cat > "$TARGET_ROOT/etc/udev/rules.d/99-input.rules" << 'EOF'
-# Input devices
-KERNEL=="event*", NAME="input/%k", MODE="0660", GROUP="input"
-KERNEL=="mice", NAME="input/%k", MODE="0660", GROUP="input"
-KERNEL=="mouse*", NAME="input/%k", MODE="0660", GROUP="input"
-SUBSYSTEM=="input", GROUP="input", MODE="0660"
-EOF
 
-    cat > "$TARGET_ROOT/etc/udev/rules.d/99-tty.rules" << 'EOF'
-# TTY devices
-KERNEL=="tty[0-9]*", GROUP="tty", MODE="0660"
-KERNEL=="ttyS[0-9]*", GROUP="tty", MODE="0660"
-EOF
-
-    cat > "$TARGET_ROOT/etc/udev/rules.d/99-video.rules" << 'EOF'
-# DRI/GPU devices
-KERNEL=="card[0-9]*", MODE="0666", GROUP="video"
-KERNEL=="renderD[0-9]*", MODE="0666", GROUP="video"
-SUBSYSTEM=="drm", GROUP="video", MODE="0666"
-EOF
-
-    # ============================================
-    # X11 DIRECTORY STRUCTURE AND PERMISSIONS
-    # ============================================
-    mkdir -p "$TARGET_ROOT/tmp/.X11-unix"
-    chmod 1777 "$TARGET_ROOT/tmp/.X11-unix"
-    sudo chown root:root "$TARGET_ROOT/tmp/.X11-unix" 2>/dev/null || true
-    
-    mkdir -p "$TARGET_ROOT/usr/lib/dri"
-    chmod 755 "$TARGET_ROOT/usr/lib/dri"
-    
-    # ============================================
-    # TMPFILES.D FOR X11 SOCKET DIRECTORY
-    # ============================================
-    mkdir -p "$TARGET_ROOT/etc/tmpfiles.d"
-    cat > "$TARGET_ROOT/etc/tmpfiles.d/x11.conf" << 'EOF'
-D /tmp/.X11-unix 1777 root root -
-EOF
-
-    # Hostname
+    # ─── Base config files ───────────────────────────────────────────
     echo "galactica" > "$TARGET_ROOT/etc/hostname"
-    
+
     cat > "$TARGET_ROOT/etc/hosts" << 'EOF'
 127.0.0.1   localhost galactica
 ::1         localhost
 EOF
-    
-    # DNS
+
     cat > "$TARGET_ROOT/etc/resolv.conf" << 'EOF'
 nameserver 8.8.8.8
 nameserver 8.8.4.4
 EOF
-    
-    # NSS config
+
     cat > "$TARGET_ROOT/etc/nsswitch.conf" << 'EOF'
 passwd:     files
 group:      files
@@ -1006,36 +952,17 @@ protocols:  files
 services:   files
 EOF
 
-    # ============================================
-    # SUDOERS CONFIGURATION
-    # ============================================
-    mkdir -p "$TARGET_ROOT/etc/sudoers.d"
     cat > "$TARGET_ROOT/etc/sudoers" << 'EOF'
-# Sudoers configuration for Galactica
 Defaults env_reset
-Defaults mail_badpass
 Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-# Root can run anything
 root ALL=(ALL:ALL) ALL
-
-# Wheel group can run anything
 %wheel ALL=(ALL:ALL) ALL
 EOF
     chmod 440 "$TARGET_ROOT/etc/sudoers"
-    
-    # Allow wheel group to use sudo
-    cat > "$TARGET_ROOT/etc/sudoers.d/wheel" << 'EOF'
-%wheel ALL=(ALL:ALL) ALL
-EOF
-    chmod 440 "$TARGET_ROOT/etc/sudoers.d/wheel"
 
-    # ============================================
-    # NETWORK SETUP SCRIPT
-    # ============================================
-    cat > "$TARGET_ROOT/sbin/network-setup" << 'EOFNET'
+    # ─── Network setup script ────────────────────────────────────────
+    cat > "$TARGET_ROOT/sbin/network-setup" << 'EOF'
 #!/bin/sh
-# Galactica Network Setup
 LOG="/var/log/airride/network.log"
 mkdir -p /var/log/airride /usr/share/udhcpc /run
 exec >> "$LOG" 2>&1
@@ -1043,8 +970,7 @@ exec >> "$LOG" 2>&1
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
 log "=== Network Setup ==="
 
-# udhcpc script with proper subnet calculation
-cat > /usr/share/udhcpc/default.script << 'DHCPSCRIPT'
+cat > /usr/share/udhcpc/default.script << 'DHCP'
 #!/bin/sh
 case "$1" in
     deconfig)
@@ -1057,926 +983,50 @@ case "$1" in
             local mask="$1" bits=0 IFS=.
             for octet in $mask; do
                 case "$octet" in
-                    255) bits=$((bits+8));;
-                    254) bits=$((bits+7));;
-                    252) bits=$((bits+6));;
-                    248) bits=$((bits+5));;
-                    240) bits=$((bits+4));;
-                    224) bits=$((bits+3));;
-                    192) bits=$((bits+2));;
-                    128) bits=$((bits+1));;
+                    255) bits=$((bits+8));; 254) bits=$((bits+7));;
+                    252) bits=$((bits+6));; 248) bits=$((bits+5));;
+                    240) bits=$((bits+4));; 224) bits=$((bits+3));;
+                    192) bits=$((bits+2));; 128) bits=$((bits+1));;
                 esac
             done
             echo $bits
         }
         PREFIX=$(mask2prefix "${subnet:-255.255.255.0}")
         ip addr add "$ip/$PREFIX" dev "$interface"
-        if [ -n "$router" ]; then
+        [ -n "$router" ] && {
             while ip route del default 2>/dev/null; do :; done
-            for gw in $router; do
-                ip route add default via "$gw" dev "$interface" && break
-            done
-        fi
-        {
-            echo "# DHCP $(date)"
-            for ns in $dns 8.8.8.8 8.8.4.4; do echo "nameserver $ns"; done
-        } > /etc/resolv.conf
+            for gw in $router; do ip route add default via "$gw" dev "$interface" && break; done
+        }
+        { echo "# DHCP $(date)"; for ns in $dns 8.8.8.8 8.8.4.4; do echo "nameserver $ns"; done; } > /etc/resolv.conf
         ;;
 esac
 exit 0
-DHCPSCRIPT
-chmod +x /usr/share/udhcpc/default.script
+DHCP
+    chmod +x /usr/share/udhcpc/default.script
 
-# Loopback
-ip link set lo up 2>/dev/null
+    ip link set lo up 2>/dev/null
 
-# Find wired interface
-WIRED_IFACE=""
-for iface in eth0 ens3 enp0s3 enp0s2 enp1s0; do
-    [ -e "/sys/class/net/$iface" ] && { WIRED_IFACE="$iface"; break; }
-done
+    for iface in eth0 ens3 enp0s3 enp0s2 enp1s0; do
+        [ -e "/sys/class/net/$iface" ] || continue
+        log "Wired: $iface"
+        echo "$iface" > /run/network-iface
+        ip link set "$iface" up
+        sleep 1
+        killall udhcpc 2>/dev/null || true
+        sleep 0.5
+        udhcpc -i "$iface" -s /usr/share/udhcpc/default.script \
+               -p /run/udhcpc-wired.pid -b -R -t 5 -T 3 -A 60 \
+            && log "DHCP bound on $iface" || log "DHCP failed on $iface"
+        break
+    done
 
-# Find wireless interface
-WIFI_IFACE=$(ls /sys/class/net/ 2>/dev/null | grep -E '^wl' | head -1)
-
-# Bring up wired with DHCP renewal enabled (-A 60 = renew every 60s)
-if [ -n "$WIRED_IFACE" ]; then
-    log "Wired: $WIRED_IFACE"
-    echo "$WIRED_IFACE" > /run/network-iface
-    ip link set "$WIRED_IFACE" up
-    sleep 1
-    kill $(cat /run/udhcpc-wired.pid 2>/dev/null) 2>/dev/null || true
-    killall udhcpc 2>/dev/null || true
-    sleep 0.5
-    udhcpc -i "$WIRED_IFACE" \
-           -s /usr/share/udhcpc/default.script \
-           -p /run/udhcpc-wired.pid \
-           -b -R -t 5 -T 3 -A 60 && log "DHCP bound on $WIRED_IFACE" \
-        || log "DHCP failed on $WIRED_IFACE"
-fi
-
-# Bring up WiFi if config exists
-if [ -n "$WIFI_IFACE" ] && [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-    log "WiFi: $WIFI_IFACE"
-    /sbin/wifi-start "$WIFI_IFACE"
-fi
-
-log "=== Network Setup Done ==="
-EOFNET
+    log "=== Network Setup Done ==="
+EOF
     chmod +x "$TARGET_ROOT/sbin/network-setup"
 
-    # ============================================
-    # INPUT/DEVICE PERMISSIONS SCRIPT
-    # ============================================
-    cat > "$TARGET_ROOT/sbin/fix-input-perms" << 'EOFPERMS'
+    # ─── Network watchdog ────────────────────────────────────────────
+    cat > "$TARGET_ROOT/sbin/network-watchdog" << 'EOF'
 #!/bin/sh
-# Fix permissions for input devices and X11
-
-# Create directories if they don't exist
-mkdir -p /tmp/.X11-unix /dev/input /dev/dri
-
-# ============================================
-# X11 socket directory
-# ============================================
-chmod 1777 /tmp/.X11-unix 2>/dev/null
-chown root:root /tmp/.X11-unix 2>/dev/null
-
-# ============================================
-# TTY devices - CRITICAL for X11 console access
-# ============================================
-# Individual TTY devices
-for tty in /dev/tty[0-9]*; do
-    [ -e "$tty" ] && chmod 660 "$tty" 2>/dev/null
-    [ -e "$tty" ] && chown root:tty "$tty" 2>/dev/null
-done
-
-# Console master device
-[ -e /dev/tty0 ] && chmod 660 /dev/tty0 2>/dev/null
-[ -e /dev/tty0 ] && chown root:tty /dev/tty0 2>/dev/null
-
-# General TTY device
-[ -e /dev/tty ] && chmod 666 /dev/tty 2>/dev/null
-
-# Serial consoles
-for ttyS in /dev/ttyS[0-9]*; do
-    [ -e "$ttyS" ] && chmod 660 "$ttyS" 2>/dev/null
-    [ -e "$ttyS" ] && chown root:tty "$ttyS" 2>/dev/null
-done
-
-# Console device
-[ -e /dev/console ] && chmod 600 /dev/console 2>/dev/null
-[ -e /dev/console ] && chown root:root /dev/console 2>/dev/null
-
-# ============================================
-# DRI/GPU devices - for hardware acceleration
-# ============================================
-for dri in /dev/dri/card* /dev/dri/renderD*; do
-    [ -e "$dri" ] && chmod 666 "$dri" 2>/dev/null
-    [ -e "$dri" ] && chown root:video "$dri" 2>/dev/null
-done
-
-# ============================================
-# Input devices - CRITICAL for keyboard/mouse in X11
-# ============================================
-# All event devices (keyboard, mouse, etc.)
-for input in /dev/input/event*; do
-    [ -e "$input" ] && chmod 660 "$input" 2>/dev/null
-    [ -e "$input" ] && chown root:input "$input" 2>/dev/null
-done
-
-# Mice devices
-for mice in /dev/input/mice /dev/input/mouse*; do
-    [ -e "$mice" ] && chmod 660 "$mice" 2>/dev/null
-    [ -e "$mice" ] && chown root:input "$mice" 2>/dev/null
-done
-
-# Legacy mouse devices
-for mouse in /dev/mouse* /dev/psaux; do
-    [ -e "$mouse" ] && chmod 660 "$mouse" 2>/dev/null
-    [ -e "$mouse" ] && chown root:input "$mouse" 2>/dev/null
-done
-
-# ============================================
-# Framebuffer devices - for display
-# ============================================
-for fb in /dev/fb*; do
-    [ -e "$fb" ] && chmod 660 "$fb" 2>/dev/null
-    [ -e "$fb" ] && chown root:video "$fb" 2>/dev/null
-done
-
-# ============================================
-# Audio devices - bonus for sound support
-# ============================================
-for snd in /dev/snd/*; do
-    [ -e "$snd" ] && chmod 660 "$snd" 2>/dev/null
-    [ -e "$snd" ] && chown root:audio "$snd" 2>/dev/null
-done
-
-# ============================================
-# Other useful devices
-# ============================================
-# Null and zero devices (should already be correct)
-[ -e /dev/null ] && chmod 666 /dev/null 2>/dev/null
-[ -e /dev/zero ] && chmod 666 /dev/zero 2>/dev/null
-[ -e /dev/random ] && chmod 666 /dev/random 2>/dev/null
-[ -e /dev/urandom ] && chmod 666 /dev/urandom 2>/dev/null
-
-# PTY master
-[ -e /dev/ptmx ] && chmod 666 /dev/ptmx 2>/dev/null
-
-# ============================================
-# Log what was fixed
-# ============================================
-echo "[$(date '+%H:%M:%S')] Device permissions fixed" >> /var/log/airride/perms.log 2>&1
-
-exit 0
-EOFPERMS
-    chmod +x "$TARGET_ROOT/sbin/fix-input-perms"
-sudo tee "$TARGET_ROOT/usr/bin/makeuser" > /dev/null << 'EOFCREATEUSER'
-
-
-#!/bin/sh
-# adduser - Galactica user creation wrapper
-# Creates users with proper groups, sudo access, and X11 support
-
-set -e
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-print_banner() {
-    echo -e "${CYAN}${BOLD}"
-    cat << 'EOF'
-╔════════════════════════════════════════╗
-║     Galactica User Creation Tool      ║
-╚════════════════════════════════════════╝
-EOF
-    echo -e "${NC}"
-}
-
-print_success() { echo -e "${GREEN}✓${NC} $1"; }
-print_error() { echo -e "${RED}✗${NC} $1"; }
-print_warning() { echo -e "${YELLOW}!${NC} $1"; }
-print_info() { echo -e "${CYAN}→${NC} $1"; }
-
-# Check if running as root
-if [ "$(id -u)" -ne 0 ]; then
-    print_error "This script must be run as root"
-    exit 1
-fi
-
-print_banner
-
-# Get username
-if [ -n "$1" ]; then
-    USERNAME="$1"
-else
-    echo -e "${BOLD}Enter username:${NC} "
-    read -r USERNAME
-fi
-
-# Validate username
-if [ -z "$USERNAME" ]; then
-    print_error "Username cannot be empty"
-    exit 1
-fi
-
-# Check if user already exists
-if id "$USERNAME" >/dev/null 2>&1; then
-    print_error "User '$USERNAME' already exists"
-    exit 1
-fi
-
-# Check for invalid characters
-if ! echo "$USERNAME" | grep -qE '^[a-z_][a-z0-9_-]*$'; then
-    print_error "Invalid username. Use only lowercase letters, numbers, underscore, and dash"
-    exit 1
-fi
-
-# Get password
-echo ""
-echo -e "${BOLD}Enter password for $USERNAME:${NC}"
-read -rs PASSWORD1
-echo ""
-echo -e "${BOLD}Confirm password:${NC}"
-read -rs PASSWORD2
-echo ""
-
-if [ "$PASSWORD1" != "$PASSWORD2" ]; then
-    print_error "Passwords do not match"
-    exit 1
-fi
-
-if [ -z "$PASSWORD1" ]; then
-    print_error "Password cannot be empty"
-    exit 1
-fi
-
-# Get full name (optional)
-echo -e "${BOLD}Enter full name (optional):${NC} "
-read -r FULLNAME
-
-# Ask if user should have sudo access
-echo -e "${BOLD}Grant sudo access? [Y/n]:${NC} "
-read -r SUDO_ACCESS
-SUDO_ACCESS=${SUDO_ACCESS:-y}
-
-echo ""
-print_info "Creating user '$USERNAME'..."
-
-# ============================================
-# Create user in /etc/passwd
-# ============================================
-
-# Find next available UID (starting from 1000)
-NEXT_UID=1000
-while grep -q ":$NEXT_UID:" /etc/passwd; do
-    NEXT_UID=$((NEXT_UID + 1))
-done
-
-# Add user to passwd
-if [ -n "$FULLNAME" ]; then
-    echo "$USERNAME:x:$NEXT_UID:$NEXT_UID:$FULLNAME:/home/$USERNAME:/bin/sh" >> /etc/passwd
-else
-    echo "$USERNAME:x:$NEXT_UID:$NEXT_UID::/home/$USERNAME:/bin/sh" >> /etc/passwd
-fi
-
-print_success "User entry created (UID: $NEXT_UID)"
-
-# ============================================
-# Create user's primary group
-# ============================================
-
-# Check if group already exists
-if ! grep -q "^$USERNAME:" /etc/group; then
-    echo "$USERNAME:x:$NEXT_UID:" >> /etc/group
-    print_success "Primary group created (GID: $NEXT_UID)"
-else
-    print_info "Group '$USERNAME' already exists"
-fi
-
-# ============================================
-# Add user to system groups
-# ============================================
-
-SYSTEM_GROUPS="wheel video audio input tty storage"
-
-print_info "Adding to system groups..."
-
-for group in $SYSTEM_GROUPS; do
-    # Check if group exists
-    if ! grep -q "^${group}:" /etc/group; then
-        print_warning "Group '$group' does not exist, skipping"
-        continue
-    fi
-    
-    # Add user to group
-    if grep -q "^${group}:x:[0-9]*:$" /etc/group; then
-        # Group exists but has no members
-        sed -i "s/^${group}:x:\([0-9]*\):$/${group}:x:\1:${USERNAME}/" /etc/group
-    elif grep -q "^${group}:x:[0-9]*:.*$" /etc/group; then
-        # Group exists and has members
-        sed -i "s/^${group}:x:\([0-9]*\):\(.*\)$/${group}:x:\1:\2,${USERNAME}/" /etc/group
-    fi
-    
-    print_success "Added to group: $group"
-done
-
-# ============================================
-# Set password
-# ============================================
-
-print_info "Setting password..."
-
-# Generate password hash
-HASH=$(openssl passwd -6 -salt "$USERNAME" "$PASSWORD1")
-
-# Add to shadow file
-echo "$USERNAME:${HASH}:$(( $(date +%s) / 86400 )):0:99999:7:::" >> /etc/shadow
-chmod 600 /etc/shadow
-
-print_success "Password set"
-
-# ============================================
-# Configure sudo access
-# ============================================
-
-if [ "$SUDO_ACCESS" = "y" ] || [ "$SUDO_ACCESS" = "Y" ]; then
-    print_info "Configuring sudo access..."
-    
-    # Verify wheel group configuration in sudoers
-    if [ -f /etc/sudoers ]; then
-        if ! grep -q "^%wheel ALL=(ALL:ALL) ALL" /etc/sudoers; then
-            print_warning "Wheel group not configured in sudoers"
-            print_info "Adding wheel group to sudoers..."
-            
-            # Backup sudoers
-            cp /etc/sudoers /etc/sudoers.bak
-            
-            # Add wheel group
-            echo "" >> /etc/sudoers
-            echo "# Allow wheel group to use sudo" >> /etc/sudoers
-            echo "%wheel ALL=(ALL:ALL) ALL" >> /etc/sudoers
-            
-            chmod 440 /etc/sudoers
-        fi
-        
-        print_success "Sudo access granted (via wheel group)"
-    else
-        print_warning "sudoers file not found, sudo may not be installed"
-    fi
-fi
-
-# ============================================
-# Create home directory
-# ============================================
-
-print_info "Creating home directory..."
-
-mkdir -p "/home/$USERNAME"
-chown -R "$USERNAME:$USERNAME" "/home/$USERNAME"
-chmod 755 "/home/$USERNAME"
-
-# Create basic home directory structure
-mkdir -p "/home/$USERNAME"/{.config,.local/share,.cache,Documents,Downloads,Desktop}
-chown -R "$USERNAME:$USERNAME" "/home/$USERNAME"
-
-print_success "Home directory created"
-
-# ============================================
-# Create .xinitrc for X11
-# ============================================
-
-print_info "Creating X11 configuration..."
-
-cat > "/home/$USERNAME/.xinitrc" << 'EOFXINITRC'
-#!/bin/sh
-sleep 2
-export DISPLAY=:0
-
-# Set background color
-xsetroot -solid "#1e1e2e" 2>/dev/null &
-
-# Start window manager if available
-if command -v twm >/dev/null 2>&1; then
-    twm &
-elif command -v i3 >/dev/null 2>&1; then
-    exec i3
-elif command -v openbox >/dev/null 2>&1; then
-    exec openbox-session
-fi
-
-# Start terminal
-if command -v xterm >/dev/null 2>&1; then
-    exec xterm -display :0 -bg black -fg white -geometry 100x30
-elif command -v urxvt >/dev/null 2>&1; then
-    exec urxvt
-else
-    # No terminal, just keep X running
-    sleep 3600
-fi
-EOFXINITRC
-
-chmod +x "/home/$USERNAME/.xinitrc"
-chown "$USERNAME:$USERNAME" "/home/$USERNAME/.xinitrc"
-
-print_success "X11 configuration created"
-
-# ============================================
-# Create .bashrc
-# ============================================
-
-cat > "/home/$USERNAME/.bashrc" << 'EOFBASHRC'
-# .bashrc
-
-# If not running interactively, don't do anything
-[[ $- != *i* ]] && return
-
-# Aliases
-alias ls='ls --color=auto'
-alias ll='ls -lh'
-alias la='ls -lah'
-alias grep='grep --color=auto'
-
-# Prompt
-PS1='\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
-
-# History
-HISTSIZE=1000
-HISTFILESIZE=2000
-
-# Environment
-export EDITOR=vi
-export VISUAL=vi
-export PAGER=less
-
-# Add user bin to PATH if it exists
-if [ -d "$HOME/.local/bin" ]; then
-    export PATH="$HOME/.local/bin:$PATH"
-fi
-
-# Welcome message
-echo "Welcome to Galactica Linux!"
-echo "Type 'startgui' to start X11"
-EOFBASHRC
-
-chown "$USERNAME:$USERNAME" "/home/$USERNAME/.bashrc"
-print_success "Shell configuration created"
-
-# ============================================
-# Create .profile
-# ============================================
-
-cat > "/home/$USERNAME/.profile" << 'EOFPROFILE'
-# .profile
-
-# Add user's private bin to PATH
-if [ -d "$HOME/.local/bin" ] ; then
-    PATH="$HOME/.local/bin:$PATH"
-fi
-
-# Source .bashrc if it exists
-if [ -f "$HOME/.bashrc" ]; then
-    . "$HOME/.bashrc"
-fi
-EOFPROFILE
-
-chown "$USERNAME:$USERNAME" "/home/$USERNAME/.profile"
-print_success "Profile configuration created"
-
-# ============================================
-# Summary
-# ============================================
-
-echo ""
-echo -e "${GREEN}${BOLD}╔════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}${BOLD}║   User Created Successfully! 🎉        ║${NC}"
-echo -e "${GREEN}${BOLD}╚════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "${CYAN}${BOLD}User Details:${NC}"
-echo -e "  Username:     ${YELLOW}$USERNAME${NC}"
-echo -e "  UID/GID:      ${YELLOW}$NEXT_UID${NC}"
-echo -e "  Home:         ${YELLOW}/home/$USERNAME${NC}"
-echo -e "  Shell:        ${YELLOW}/bin/sh${NC}"
-echo ""
-echo -e "${CYAN}${BOLD}Groups:${NC}"
-echo -e "  Primary:      ${YELLOW}$USERNAME${NC}"
-echo -e "  Additional:   ${YELLOW}$SYSTEM_GROUPS${NC}"
-echo ""
-echo -e "${CYAN}${BOLD}Capabilities:${NC}"
-if [ "$SUDO_ACCESS" = "y" ] || [ "$SUDO_ACCESS" = "Y" ]; then
-    echo -e "  ${GREEN}✓${NC} Sudo access (via wheel group)"
-else
-    echo -e "  ${YELLOW}✗${NC} No sudo access"
-fi
-echo -e "  ${GREEN}✓${NC} X11 support"
-echo -e "  ${GREEN}✓${NC} Audio/video access"
-echo -e "  ${GREEN}✓${NC} Storage access"
-echo ""
-echo -e "${CYAN}${BOLD}Next Steps:${NC}"
-echo -e "  1. Login as ${YELLOW}$USERNAME${NC}"
-echo -e "  2. Run ${YELLOW}startgui${NC} to start X11"
-echo -e "  3. Install packages with ${YELLOW}dreamland install <package>${NC}"
-echo ""
-echo -e "${YELLOW}Note:${NC} User must log out and back in for group changes to take effect"
-echo ""
-
-
-EOFCREATEUSER
-
-sudo chmod 755 "$TARGET_ROOT/usr/bin/makeuser"
-
-cat > "$TARGET_ROOT/sbin/setup-xorg" << 'EOFSETUPXORG'
-
-#!/bin/sh
-# setup-xorg - Automated X11 setup for Galactica Linux
-# This script installs and configures X11 with proper permissions
-
-set -e
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-print_banner() {
-    echo -e "${CYAN}${BOLD}"
-    cat << 'EOF'
-╔══════════════════════════════════════════════╗
-║      Galactica X11 Setup Script              ║
-║      Installing X.Org Server & Dependencies  ║
-╚══════════════════════════════════════════════╝
-EOF
-    echo -e "${NC}"
-}
-
-print_step() {
-    echo -e "\n${BOLD}${BLUE}[STEP $1]${NC} ${BOLD}$2${NC}"
-    echo -e "${CYAN}$(printf '=%.0s' {1..50})${NC}"
-}
-
-print_success() { echo -e "${GREEN}✓${NC} $1"; }
-print_error() { echo -e "${RED}✗${NC} $1"; }
-print_warning() { echo -e "${YELLOW}!${NC} $1"; }
-print_info() { echo -e "${CYAN}→${NC} $1"; }
-
-# Check if running as root
-if [ "$(id -u)" -ne 0 ]; then
-    print_error "This script must be run as root"
-    exit 1
-fi
-
-print_banner
-
-# ============================================
-# STEP 1: Check package manager
-# ============================================
-print_step 1 "Checking package manager"
-if ! command -v dreamland >/dev/null 2>&1; then
-    print_error "dreamland package manager not found!"
-    exit 1
-fi
-print_success "dreamland found"
-
-# Update package database
-print_info "Updating package database..."
-dreamland sync || print_warning "Failed to sync package database (continuing anyway)"
-
-# ============================================
-# STEP 2: Install required packages
-# ============================================
-print_step 2 "Installing X11 packages"
-
-PACKAGES="xorg-server xorg-xinit util-linux xf86-input-evdev"
-OPTIONAL_PACKAGES="xterm ctwm xorg-xsetroot"
-
-print_info "Required packages: $PACKAGES"
-print_info "Optional packages: $OPTIONAL_PACKAGES"
-echo ""
-
-for pkg in $PACKAGES; do
-    print_info "Installing $pkg..."
-    if dreamland install "$pkg" ; then
-        print_success "$pkg installed"
-    else
-        print_error "Failed to install $pkg"
-        exit 1
-    fi
-done
-
-print_info "Installing optional packages..."
-for pkg in $OPTIONAL_PACKAGES; do
-    if dreamland install "$pkg" ; then
-        print_success "$pkg installed"
-    else
-        print_warning "$pkg installation failed (optional)"
-    fi
-done
-
-# ============================================
-# STEP 3: Create permission fix script
-# ============================================
-print_step 3 "Creating device permission script"
-
-cat > /sbin/fix-input-perms << 'EOFPERMS'
-#!/bin/sh
-# Fix permissions for input devices and X11
-
-# Create directories if they don't exist
-mkdir -p /tmp/.X11-unix /dev/input /dev/dri
-
-# X11 socket directory
-chmod 1777 /tmp/.X11-unix 2>/dev/null
-chown root:root /tmp/.X11-unix 2>/dev/null
-
-# TTY devices - CRITICAL for X11 console access
-for tty in /dev/tty[0-9]*; do
-    [ -e "$tty" ] && chmod 660 "$tty" 2>/dev/null
-    [ -e "$tty" ] && chown root:tty "$tty" 2>/dev/null
-done
-
-# Console master device
-[ -e /dev/tty0 ] && chmod 660 /dev/tty0 2>/dev/null
-[ -e /dev/tty0 ] && chown root:tty /dev/tty0 2>/dev/null
-
-# General TTY device
-[ -e /dev/tty ] && chmod 666 /dev/tty 2>/dev/null
-
-# Serial consoles
-for ttyS in /dev/ttyS[0-9]*; do
-    [ -e "$ttyS" ] && chmod 660 "$ttyS" 2>/dev/null
-    [ -e "$ttyS" ] && chown root:tty "$ttyS" 2>/dev/null
-done
-
-# Console device
-[ -e /dev/console ] && chmod 600 /dev/console 2>/dev/null
-[ -e /dev/console ] && chown root:root /dev/console 2>/dev/null
-
-# DRI/GPU devices - for hardware acceleration
-for dri in /dev/dri/card* /dev/dri/renderD*; do
-    [ -e "$dri" ] && chmod 666 "$dri" 2>/dev/null
-    [ -e "$dri" ] && chown root:video "$dri" 2>/dev/null
-done
-
-# Input devices - CRITICAL for keyboard/mouse in X11
-for input in /dev/input/event*; do
-    [ -e "$input" ] && chmod 660 "$input" 2>/dev/null
-    [ -e "$input" ] && chown root:input "$input" 2>/dev/null
-done
-
-# Mice devices
-for mice in /dev/input/mice /dev/input/mouse*; do
-    [ -e "$mice" ] && chmod 660 "$mice" 2>/dev/null
-    [ -e "$mice" ] && chown root:input "$mice" 2>/dev/null
-done
-
-# Framebuffer devices - for display
-for fb in /dev/fb*; do
-    [ -e "$fb" ] && chmod 660 "$fb" 2>/dev/null
-    [ -e "$fb" ] && chown root:video "$fb" 2>/dev/null
-done
-
-# Audio devices
-for snd in /dev/snd/*; do
-    [ -e "$snd" ] && chmod 660 "$snd" 2>/dev/null
-    [ -e "$snd" ] && chown root:audio "$snd" 2>/dev/null
-done
-
-# Other useful devices
-[ -e /dev/null ] && chmod 666 /dev/null 2>/dev/null
-[ -e /dev/zero ] && chmod 666 /dev/zero 2>/dev/null
-[ -e /dev/random ] && chmod 666 /dev/random 2>/dev/null
-[ -e /dev/urandom ] && chmod 666 /dev/urandom 2>/dev/null
-[ -e /dev/ptmx ] && chmod 666 /dev/ptmx 2>/dev/null
-
-exit 0
-EOFPERMS
-
-chmod +x /sbin/fix-input-perms
-print_success "Permission fix script created at /sbin/fix-input-perms"
-
-# ============================================
-# STEP 4: Create X11 configuration
-# ============================================
-print_step 4 "Creating X11 configuration"
-
-mkdir -p /etc/X11
-
-cat > /etc/X11/xorg.conf << 'EOFXORG'
-Section "ServerFlags"
-    Option "AutoAddDevices" "False"
-    Option "AllowEmptyInput" "False"
-    Option "AllowMouseOpenFail" "True"
-    Option "DontVTSwitch" "True"
-EndSection
-
-Section "InputDevice"
-    Identifier "Keyboard"
-    Driver "evdev"
-    Option "Device" "/dev/input/event1"
-    Option "XkbLayout" "us"
-EndSection
-
-Section "InputDevice"
-    Identifier "Keyboard2"
-    Driver "evdev"
-    Option "Device" "/dev/input/event4"
-    Option "XkbLayout" "us"
-EndSection
-
-Section "InputDevice"
-    Identifier "Mouse"  
-    Driver "evdev"
-    Option "Device" "/dev/input/event3"
-EndSection
-
-Section "Device"
-    Identifier "Card0"
-    Driver "modesetting"
-EndSection
-
-Section "Screen"
-    Identifier "Screen0"
-    Device "Card0"
-EndSection
-
-Section "ServerLayout"
-    Identifier "Default"
-    Screen "Screen0"
-    InputDevice "Keyboard" "CoreKeyboard"
-    InputDevice "Keyboard2" "SendCoreEvents"
-    InputDevice "Mouse" "CorePointer"
-EndSection
-EOFXORG
-
-print_success "X11 configuration created at /etc/X11/xorg.conf"
-
-# ============================================
-# STEP 5: Create startgui script
-# ============================================
-print_step 5 "Creating startgui launcher"
-
-cat > /usr/bin/startgui << 'EOFSTARTGUI'
-#!/bin/sh
-hostname galactica 2>/dev/null
-
-# Only try to fix permissions if we're root
-if [ "$(id -u)" = "0" ]; then
-    mkdir -p /tmp/.X11-unix
-    chmod 1777 /tmp/.X11-unix
-    chown root:root /tmp/.X11-unix 2>/dev/null
-    
-    chmod 660 /dev/tty* 2>/dev/null
-    chown root:tty /dev/tty* 2>/dev/null
-    chmod 666 /dev/dri/* 2>/dev/null
-    chmod 660 /dev/input/* 2>/dev/null
-    chown root:input /dev/input/* 2>/dev/null
-fi
-
-# Set up environment
-export HOME="${HOME:-$(eval echo ~$(whoami))}"
-export XAUTHORITY="$HOME/.Xauthority"
-rm -f "$XAUTHORITY" 2>/dev/null
-touch "$XAUTHORITY"
-cd "$HOME"
-
-# Get current VT number
-VT=$(tty | sed 's|/dev/tty||')
-
-# Start X on current VT without switching
-exec startx "$HOME/.xinitrc" -- vt${VT} -keeptty -novtswitch 2>&1
-EOFSTARTGUI
-
-chmod +x /usr/bin/startgui
-print_success "startgui script created at /usr/bin/startgui"
-
-# ============================================
-# STEP 6: Setup groups and permissions
-# ============================================
-print_step 6 "Configuring groups"
-
-# Ensure required groups exist
-for group_line in "tty:x:5:" "video:x:44:" "input:x:104:" "audio:x:29:" "wheel:x:10:"; do
-    group_name=$(echo "$group_line" | cut -d: -f1)
-    if ! grep -q "^${group_name}:" /etc/group; then
-        echo "$group_line" >> /etc/group
-        print_success "Created group: $group_name"
-    else
-        print_info "Group already exists: $group_name"
-    fi
-done
-
-# ============================================
-# STEP 7: Setup AirRide service
-# ============================================
-print_step 7 "Creating AirRide service for input permissions"
-
-if [ -d /etc/airride/services ]; then
-    cat > /etc/airride/services/input-perms.service << 'EOFSERVICE'
-[Service]
-name=input-perms
-description=Set Input Device Permissions for X11
-type=oneshot
-exec_start=/sbin/fix-input-perms
-autostart=true
-parallel=true
-
-[Dependencies]
-after=hostname
-EOFSERVICE
-    print_success "AirRide service created"
-else
-    print_warning "AirRide service directory not found, skipping service creation"
-fi
-
-# ============================================
-# STEP 8: Run permission fixes now
-# ============================================
-print_step 8 "Applying permissions"
-
-/sbin/fix-input-perms
-print_success "Permissions applied"
-
-# ============================================
-# STEP 9: Setup example .xinitrc for root
-# ============================================
-print_step 9 "Creating example .xinitrc"
-
-if [ ! -f /root/.xinitrc ]; then
-    cat > /root/.xinitrc << 'EOFXINITRC'
-#!/bin/sh
-sleep 2
-export DISPLAY=:0
-
-# Set background color
-xsetroot -solid "#1e1e2e" 2>/dev/null &
-
-# Start window manager if available
-if command -v twm >/dev/null 2>&1; then
-    twm &
-fi
-
-# Start terminal
-if command -v xterm >/dev/null 2>&1; then
-    exec xterm -display :0 -bg black -fg white -geometry 80x24
-else
-    # Fallback - keep X running
-    sleep 3600
-fi
-EOFXINITRC
-    chmod +x /root/.xinitrc
-    print_success "Example .xinitrc created for root"
-else
-    print_info ".xinitrc already exists for root"
-fi
-
-# ============================================
-# FINAL SUMMARY
-# ============================================
-echo ""
-echo -e "${GREEN}${BOLD}╔════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}${BOLD}║   X11 Setup Complete! 🎉                  ║${NC}"
-echo -e "${GREEN}${BOLD}╚════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "${CYAN}${BOLD}Usage:${NC}"
-echo -e "  ${YELLOW}startgui${NC}               - Start X11 GUI"
-echo ""
-echo -e "${CYAN}${BOLD}For non-root users:${NC}"
-echo -e "  1. Create user and add to required groups:"
-echo -e "     ${YELLOW}usermod -aG wheel,video,input,audio,tty username${NC}"
-echo -e "  2. Create ${YELLOW}~/.xinitrc${NC} for the user"
-echo -e "  3. User must ${BOLD}log out and back in${NC} for groups to take effect"
-echo ""
-echo -e "${CYAN}${BOLD}Installed packages:${NC}"
-for pkg in $PACKAGES $OPTIONAL_PACKAGES; do
-    echo -e "  • $pkg"
-done
-echo ""
-echo -e "${CYAN}${BOLD}Configuration files created:${NC}"
-echo -e "  • /etc/X11/xorg.conf"
-echo -e "  • /usr/bin/startgui"
-echo -e "  • /sbin/fix-input-perms"
-echo -e "  • /etc/airride/services/input-perms.service"
-echo -e "  • /root/.xinitrc"
-echo ""
-echo -e "${GREEN}Try running: ${YELLOW}startgui${NC}"
-echo ""
-EOFSETUPXORG
-chmod +x $TARGET_ROOT/sbin/setup-xorg
-    # ============================================
-    # NETWORK WATCHDOG
-    # ============================================
-    cat > "$TARGET_ROOT/sbin/network-watchdog" << 'EOFWATCH'
-#!/bin/sh
-# Galactica Network Watchdog — monitors wired + WiFi independently
 LOG="/var/log/airride/network.log"
 mkdir -p /var/log/airride
 
@@ -1985,99 +1035,73 @@ log() { echo "[$(date '+%H:%M:%S')] watchdog: $1" | tee -a "$LOG"; }
 PING_TARGET="8.8.8.8"
 CHECK_INTERVAL=30
 FAIL_THRESHOLD=3
-WIFI_CHECK_INTERVAL=10
-
-wired_failures=0
-wifi_failures=0
-last_wifi_check=0
-
-is_connected()  { ping -c 1 -W 3 "$PING_TARGET" >/dev/null 2>&1; }
-wifi_iface()    { ls /sys/class/net/ 2>/dev/null | grep -E '^wl' | head -1; }
-wpa_connected() {
-    local iface="$1"; [ -z "$iface" ] && return 1
-    [ "$(wpa_cli -i "$iface" status 2>/dev/null | grep '^wpa_state=' | cut -d= -f2)" = "COMPLETED" ]
-}
-
-restart_wired() {
-    log "Restarting wired DHCP..."
-    IFACE=$(cat /run/network-iface 2>/dev/null); [ -z "$IFACE" ] && return
-    kill $(cat /run/udhcpc-wired.pid 2>/dev/null) 2>/dev/null || true
-    sleep 1
-    ip link set "$IFACE" up
-    udhcpc -i "$IFACE" -s /usr/share/udhcpc/default.script \
-           -p /run/udhcpc-wired.pid -b -R -t 5 -T 3 -A 60 2>>"$LOG" || true
-}
+failures=0
 
 log "Watchdog started"
 
 while true; do
-    NOW=$(date +%s)
-    WIFI=$(wifi_iface)
-
-    # WiFi health check (runs more frequently than ping check)
-    if [ -n "$WIFI" ] && [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-        if [ $((NOW - last_wifi_check)) -ge $WIFI_CHECK_INTERVAL ]; then
-            last_wifi_check=$NOW
-            WPA_PID=$(cat /run/wpa_supplicant.pid 2>/dev/null)
-            # Check if wpa_supplicant process is still alive
-            if [ -n "$WPA_PID" ] && ! kill -0 "$WPA_PID" 2>/dev/null; then
-                log "wpa_supplicant died (pid $WPA_PID), recovering"
-                /sbin/wifi-start "$WIFI" 2>>"$LOG"
-                wifi_failures=0
-                sleep 5
-                continue
-            fi
-            # Check association state
-            if ! wpa_connected "$WIFI"; then
-                wifi_failures=$((wifi_failures + 1))
-                log "Not associated (fail $wifi_failures/$FAIL_THRESHOLD)"
-                if [ "$wifi_failures" -ge "$FAIL_THRESHOLD" ]; then
-                    log "Association lost, recovering WiFi"
-                    /sbin/wifi-start "$WIFI" 2>>"$LOG"
-                    wifi_failures=0
-                fi
-            else
-                # Associated but no IP?
-                if ! ip -4 addr show "$WIFI" 2>/dev/null | grep -q 'inet '; then
-                    log "Associated but no IP, restarting DHCP"
-                    kill $(cat /run/udhcpc-wifi.pid 2>/dev/null) 2>/dev/null || true
-                    udhcpc -i "$WIFI" -s /usr/share/udhcpc/default.script \
-                           -p /run/udhcpc-wifi.pid -b -R -t 5 -T 3 -A 60 2>>"$LOG" || true
-                else
-                    wifi_failures=0
-                fi
-            fi
-        fi
-    fi
-
     sleep "$CHECK_INTERVAL"
-
-    # Connectivity check — only restart what's broken
-    if ! is_connected; then
-        wired_failures=$((wired_failures + 1))
-        log "No connectivity (fail $wired_failures/$FAIL_THRESHOLD)"
-        if [ "$wired_failures" -ge "$FAIL_THRESHOLD" ]; then
-            log "Connectivity lost, recovering..."
-            WIRED=$(cat /run/network-iface 2>/dev/null)
-            [ -n "$WIRED" ] && restart_wired
-            if [ -n "$WIFI" ] && [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-                wpa_connected "$WIFI" || /sbin/wifi-start "$WIFI" 2>>"$LOG"
-            fi
-            wired_failures=0
-            sleep 10
-        fi
+    if ping -c 1 -W 3 "$PING_TARGET" >/dev/null 2>&1; then
+        failures=0
     else
-        wired_failures=0
+        failures=$((failures + 1))
+        log "No connectivity (fail $failures/$FAIL_THRESHOLD)"
+        if [ "$failures" -ge "$FAIL_THRESHOLD" ]; then
+            log "Recovering..."
+            IFACE=$(cat /run/network-iface 2>/dev/null)
+            [ -n "$IFACE" ] && {
+                kill $(cat /run/udhcpc-wired.pid 2>/dev/null) 2>/dev/null || true
+                sleep 1
+                ip link set "$IFACE" up
+                udhcpc -i "$IFACE" -s /usr/share/udhcpc/default.script \
+                       -p /run/udhcpc-wired.pid -b -R -t 5 -T 3 -A 60 2>>"$LOG" || true
+            }
+            failures=0
+        fi
     fi
 done
-EOFWATCH
+EOF
     chmod +x "$TARGET_ROOT/sbin/network-watchdog"
 
-    # ============================================
-    # AIRRIDE SERVICES
-    # ============================================
-    
-    # Hostname service (runs first)
+    # ─── Power management ────────────────────────────────────────────
+    cat > "$TARGET_ROOT/sbin/poweroff" << 'EOF'
+#!/bin/sh
+sync
+[ -w /sys/power/state ] && echo poweroff > /sys/power/state 2>/dev/null
+echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
+echo s > /proc/sysrq-trigger 2>/dev/null
+echo o > /proc/sysrq-trigger 2>/dev/null
+sleep 1
+busybox poweroff -f
+EOF
+
+    cat > "$TARGET_ROOT/sbin/reboot" << 'EOF'
+#!/bin/sh
+sync
+echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
+echo s > /proc/sysrq-trigger 2>/dev/null
+echo b > /proc/sysrq-trigger 2>/dev/null
+sleep 1
+busybox reboot -f
+EOF
+
+    cat > "$TARGET_ROOT/sbin/halt"     << 'EOF'
+#!/bin/sh
+exec /sbin/poweroff "$@"
+EOF
+
+    cat > "$TARGET_ROOT/sbin/shutdown" << 'EOF'
+#!/bin/sh
+case "$1" in -r) exec /sbin/reboot ;; *) exec /sbin/poweroff ;; esac
+EOF
+
+    chmod 755 \
+        "$TARGET_ROOT/sbin/poweroff" \
+        "$TARGET_ROOT/sbin/reboot" \
+        "$TARGET_ROOT/sbin/halt" \
+        "$TARGET_ROOT/sbin/shutdown"
+
+    # ─── AirRide services ────────────────────────────────────────────
     cat > "$TARGET_ROOT/etc/airride/services/hostname.service" << 'EOF'
 [Service]
 name=hostname
@@ -2090,21 +1114,6 @@ parallel=true
 [Dependencies]
 EOF
 
-    # Input/Device permissions service (for X11)
-    cat > "$TARGET_ROOT/etc/airride/services/input-perms.service" << 'EOF'
-[Service]
-name=input-perms
-description=Set Input Device Permissions
-type=oneshot
-exec_start=/sbin/fix-input-perms
-autostart=true
-parallel=true
-
-[Dependencies]
-after=hostname
-EOF
-
-    # Network setup service
     cat > "$TARGET_ROOT/etc/airride/services/network.service" << 'EOF'
 [Service]
 name=network
@@ -2115,10 +1124,9 @@ autostart=true
 parallel=true
 
 [Dependencies]
-after=hostname,input-perms
+after=hostname
 EOF
 
-    # Network watchdog service
     cat > "$TARGET_ROOT/etc/airride/services/network-watchdog.service" << 'EOF'
 [Service]
 name=network-watchdog
@@ -2134,7 +1142,6 @@ restart_delay=5
 after=network
 EOF
 
-    # Serial console login (ttyS0)
     cat > "$TARGET_ROOT/etc/airride/services/ttyS0.service" << 'EOF'
 [Service]
 name=ttyS0
@@ -2151,7 +1158,6 @@ foreground=true
 after=network
 EOF
 
-    # Virtual console 1 login (tty1) - for GUI mode
     cat > "$TARGET_ROOT/etc/airride/services/tty1.service" << 'EOF'
 [Service]
 name=tty1
@@ -2168,157 +1174,17 @@ foreground=true
 after=network
 EOF
 
-    # ============================================
-    # POWER MANAGEMENT SCRIPTS
-    # ============================================
-    cat > "$TARGET_ROOT/sbin/poweroff" << 'EOF'
-#!/bin/sh
-echo "Syncing disks..."
-sync
-sync
-echo "Sending ACPI shutdown..."
-# Try ACPI shutdown first
-if [ -w /sys/power/state ]; then
-    echo poweroff > /sys/power/state 2>/dev/null
-fi
-# Force kernel to sync and power off
-echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
-echo s > /proc/sysrq-trigger 2>/dev/null  # sync
-echo o > /proc/sysrq-trigger 2>/dev/null  # poweroff
-# If still running, use reboot syscall
-sleep 1
-reboot -f -p 2>/dev/null || busybox poweroff -f
-EOF
-
-    cat > "$TARGET_ROOT/sbin/halt" << 'EOF'
-#!/bin/sh
-exec /sbin/poweroff "$@"
-EOF
-
-    cat > "$TARGET_ROOT/sbin/reboot" << 'EOF'
-#!/bin/sh
-echo "Syncing disks..."
-sync
-sync
-echo "Rebooting..."
-echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
-echo s > /proc/sysrq-trigger 2>/dev/null
-echo b > /proc/sysrq-trigger 2>/dev/null
-sleep 1
-busybox reboot -f
-EOF
-
-    cat > "$TARGET_ROOT/sbin/shutdown" << 'EOF'
-#!/bin/sh
-case "$1" in
-    -r) exec /sbin/reboot ;;
-    -h|-P|*) exec /sbin/poweroff ;;
-esac
-EOF
-
-    chmod 755 "$TARGET_ROOT/sbin/poweroff" "$TARGET_ROOT/sbin/halt" "$TARGET_ROOT/sbin/reboot" "$TARGET_ROOT/sbin/shutdown"
-
-    # ============================================
-    # GUI SUPPORT WITH PROPER X11 CONFIG
-    # ============================================
-    mkdir -p "$TARGET_ROOT/etc/X11/xorg.conf.d"
-    
-    cat > "$TARGET_ROOT/etc/X11/xorg.conf" << 'EOF'
-Section "ServerFlags"
-    Option "AutoAddDevices" "True"
-    Option "AutoEnableDevices" "True"
-    Option "DontVTSwitch" "False"
-    Option "AllowMouseOpenFail" "True"
-EndSection
-
-Section "InputClass"
-    Identifier "evdev keyboard catchall"
-    MatchIsKeyboard "on"
-    MatchDevicePath "/dev/input/event*"
-    Driver "evdev"
-    Option "XkbLayout" "us"
-EndSection
-
-Section "InputClass"
-    Identifier "evdev mouse catchall"
-    MatchIsPointer "on"
-    MatchDevicePath "/dev/input/event*"
-    Driver "evdev"
-EndSection
-
-Section "Device"
-    Identifier "GPU"
-    Driver "modesetting"
-    Option "AccelMethod" "glamor"
-EndSection
-
-Section "Screen"
-    Identifier "Screen0"
-    Device "GPU"
-    DefaultDepth 24
-    SubSection "Display"
-        Depth 24
-        Modes "1024x768" "800x600"
-    EndSubSection
-EndSection
-EOF
-
-    cat > "$TARGET_ROOT/usr/bin/startgui" << 'EOF'
-#!/bin/sh
-hostname galactica 2>/dev/null
-
-# Ensure proper permissions for X11
-mkdir -p /tmp/.X11-unix
-chmod 1777 /tmp/.X11-unix
-chown root:root /tmp/.X11-unix 2>/dev/null
-
-# Fix TTY permissions if running as root
-if [ "$(id -u)" = "0" ]; then
-    chmod 660 /dev/tty* 2>/dev/null
-    chown root:tty /dev/tty* 2>/dev/null
-    chmod 666 /dev/dri/* 2>/dev/null
-    chmod 660 /dev/input/* 2>/dev/null
-    chown root:input /dev/input/* 2>/dev/null
-fi
-
-export DISPLAY=:0
-export HOME="${HOME:-/root}"
-export XAUTHORITY="$HOME/.Xauthority"
-touch "$XAUTHORITY"
-cd "$HOME"
-
-# Start X with proper options
-exec startx "$HOME/.xinitrc" -- -keeptty -nolisten tcp 2>&1
-EOF
-    chmod +x "$TARGET_ROOT/usr/bin/startgui"
-
-    cat > "$TARGET_ROOT/root/.xinitrc" << 'EOF'
-#!/bin/sh
-# Basic X11 session
-xsetroot -solid "#1e1e2e" 2>/dev/null &
-[ -x /usr/bin/twm ] && twm &
-exec xterm -bg black -fg white -fa 'Monospace' -fs 10 -geometry 100x30
-EOF
-    chmod +x "$TARGET_ROOT/root/.xinitrc"
-
-    # ============================================
-    # MOTD
-    # ============================================
+    # ─── MOTD ────────────────────────────────────────────────────────
     cat > "$TARGET_ROOT/etc/motd" << 'EOF'
 Welcome to Galactica Linux!
 
-Commands:
-  startgui          - Start X11 GUI (in QEMU GUI mode)
-  network-setup     - Reconfigure network
-  airridectl list   - List services
-  dreamland sync    - Sync packages
-
-Network: DHCP auto-configured on boot
-Default password: galactica
-
+  dl sync                  sync package repository
+  dl install <pkg>         install a package
+  airridectl list          list services
+  network-setup            reconfigure network
 EOF
-    
-    print_success "System files created with proper X11 permissions"
+
+    print_success "System files created"
 }
 
 create_rootfs() {

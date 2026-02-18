@@ -1,0 +1,11 @@
+[Service]
+name=logger
+description=Test Logger
+type=simple
+exec_start=/bin/sh -c "while true; do echo tick; sleep 5; done"
+autostart=true
+parallel=true
+restart=on-failure
+restart_delay=3
+
+[Dependencies]

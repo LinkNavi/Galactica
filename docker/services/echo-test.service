@@ -1,0 +1,8 @@
+[Service]
+name=echo-test
+description=Docker Test Service
+type=oneshot
+exec_start=/bin/echo Hello from AirRide
+autostart=true
+
+[Dependencies]
