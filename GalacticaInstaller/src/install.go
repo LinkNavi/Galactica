@@ -12,7 +12,10 @@ import (
 )
 
 const MOUNT_POINT = "/mnt/galactica"
+// Global installation progress tracker
 
+
+var installError error = nil
 func getSourceDir() string {
 	if env := os.Getenv("GALACTICA_SOURCE"); env != "" {
 		return env
@@ -41,11 +44,10 @@ var installationRunning bool = false
 
 // doInstall performs the actual installation
 func (m Model) doInstall() tea.Cmd {
-	// Reset progress
 	currentInstallStep = 0
 	installationRunning = true
+	installError = nil
 
-	// Start the installation in a goroutine
 	go func() {
 		steps := []struct {
 			name string
@@ -60,7 +62,7 @@ func (m Model) doInstall() tea.Cmd {
 			}},
 			{"Formatting filesystems", func(disk, _, _, _, _ string) error {
 				time.Sleep(2 * time.Second)
-				exec.Command("partprobe", disk).Run()
+				exec.Command("partx", "-u", disk).Run()
 				time.Sleep(1 * time.Second)
 				return FormatFilesystems(disk)
 			}},
@@ -93,6 +95,7 @@ func (m Model) doInstall() tea.Cmd {
 		for i, step := range steps {
 			currentInstallStep = i
 			if err := step.fn(m.selectedDisk, m.hostname, m.rootPassword, m.username, m.userPassword); err != nil {
+				installError = fmt.Errorf("step '%s' failed: %w", step.name, err)
 				installationRunning = false
 				return
 			}
@@ -102,7 +105,6 @@ func (m Model) doInstall() tea.Cmd {
 		installationRunning = false
 	}()
 
-	// Return a cmd that ticks to check progress
 	return installProgressTicker()
 }
 
@@ -112,7 +114,7 @@ func installProgressTicker() tea.Cmd {
 		if !installationRunning && currentInstallStep >= 10 {
 			return InstallCompleteMsg{}
 		}
-		return InstallProgressMsg{step: currentInstallStep, err: nil}
+		return InstallProgressMsg{step: currentInstallStep, err: installError}
 	})
 }
 
@@ -183,11 +185,10 @@ func PartitionDisk(device string) error {
 		// Also try losetup to refresh partitions
 		exec.Command("losetup", "-P", device).Run()
 		time.Sleep(1 * time.Second)
-	} else {
-		// For regular disks, use partprobe
-		exec.Command("partprobe", device).Run()
-		time.Sleep(1 * time.Second)
-	}
+} else {
+    exec.Command("partx", "-u", device).Run()
+    time.Sleep(1 * time.Second)
+}
 
 	// Wait for partitions to appear in /dev
 	maxWait := 10 // seconds

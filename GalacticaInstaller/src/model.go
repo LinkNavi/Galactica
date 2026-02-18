@@ -127,8 +127,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < m.getMaxCursor() {
 				m.cursor++
 			}
-		case "enter", " ":
-			return m.handleSelection()
+		case "enter", " ", "ctrl+m":
+    			return m.handleSelection()
+
 		case "esc":
 			if m.screen > ScreenWelcome && !m.installing {
 				m.screen--
@@ -184,7 +185,7 @@ func (m Model) handleUserSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "enter":
+	case "enter", "ctrl+m":
 		if m.activeField < FieldCount-1 {
 			m.activeField++
 			return m, nil

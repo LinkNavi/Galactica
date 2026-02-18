@@ -1321,7 +1321,17 @@ main() {
     [[ "${cont:-y}" != "y" ]] && exit 0
     
     preflight_checks || exit 1
-    build_kernel || exit 1
+   if [[ -f "$TARGET_ROOT/boot/vmlinuz-galactica" ]]; then
+        print_success "Kernel already present, skipping build"
+    else
+        read -p "No kernel found. Build from source? (y/n) [y]: " build_k
+        if [[ "${build_k:-y}" == "y" ]]; then
+            build_kernel || exit 1
+        else
+            print_error "No kernel available. Place a vmlinuz at $TARGET_ROOT/boot/vmlinuz-galactica and retry."
+            exit 1
+        fi
+    fi
     build_poyo || exit 1
     build_airride || exit 1
     build_airridectl || exit 1

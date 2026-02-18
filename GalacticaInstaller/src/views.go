@@ -53,7 +53,10 @@ func (m Model) viewWelcome() string {
 	b.WriteString("\n\n")
 	help := helpStyle.Render("Use ↑/↓ or j/k to move, Enter to select, Esc to go back, q to quit")
 	b.WriteString(center(help, m.width))
-
+if m.err != nil {
+    b.WriteString(center(errorStyle.Render("Error: "+m.err.Error()), m.width))
+    b.WriteString("\n\n")
+}
 	return b.String()
 }
 

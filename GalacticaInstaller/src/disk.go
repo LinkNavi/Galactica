@@ -18,7 +18,7 @@ type DiskInfo struct {
 }
 
 // TESTING MODE - Set to true to only show loop/test devices
-const TESTING_MODE = true
+const TESTING_MODE = false
 
 // ScanDisks scans for available disks on the system
 func ScanDisks() ([]DiskInfo, error) {

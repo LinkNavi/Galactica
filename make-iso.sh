@@ -105,10 +105,10 @@ build_initrd() {
     cp "$BUSYBOX" "$ISO_INITRD/bin/busybox"
     chmod +x "$ISO_INITRD/bin/busybox"
     for cmd in sh ash ls cat echo cp mv rm mkdir mount umount sleep \
-               grep sed awk ps kill ln chmod chown ip ifconfig ping \
-               hostname uname dmesg parted mkfs.ext4 mkswap swapon \
-               blkid lsblk partx losetup dd sync rsync udhcpc; do
-        ln -sf busybox "$ISO_INITRD/bin/$cmd" 2>/dev/null || true
+           grep sed awk ps kill ln chmod chown ip ifconfig ping \
+           hostname uname dmesg mkswap swapon \
+            losetup dd sync udhcpc; do      
+    ln -sf busybox "$ISO_INITRD/bin/$cmd" 2>/dev/null || true
     done
     ok "busybox installed"
 
@@ -268,7 +268,7 @@ set timeout=5
 set default=0
 
 menuentry "Install Galactica Linux" {
-    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0 console=ttyS0,115200 quiet
+    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0 quiet
     initrd /boot/initrd.img
 }
 
