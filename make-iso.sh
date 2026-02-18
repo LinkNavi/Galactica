@@ -1,7 +1,6 @@
 #!/bin/bash
 # make-iso.sh — Build a bootable Galactica Installer ISO
 
-# Removed set -e — use explicit error checks instead
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -78,7 +77,6 @@ build_installer() {
     ok "Installer binary built → iso-installer-bin"
 }
 
-# Copy all shared libs for a given binary into the initrd
 copy_libs() {
     local bin="$1"
     [[ ! -f "$bin" ]] && return 0
@@ -105,10 +103,10 @@ build_initrd() {
     cp "$BUSYBOX" "$ISO_INITRD/bin/busybox"
     chmod +x "$ISO_INITRD/bin/busybox"
     for cmd in sh ash ls cat echo cp mv rm mkdir mount umount sleep \
-           grep sed awk ps kill ln chmod chown ip ifconfig ping \
-           hostname uname dmesg mkswap swapon \
-            losetup dd sync udhcpc; do      
-    ln -sf busybox "$ISO_INITRD/bin/$cmd" 2>/dev/null || true
+               grep sed awk ps kill ln chmod chown ip ifconfig ping \
+               hostname uname dmesg mkswap swapon losetup dd sync udhcpc \
+               setsid chvt openvt; do
+        ln -sf busybox "$ISO_INITRD/bin/$cmd" 2>/dev/null || true
     done
     ok "busybox installed"
 
@@ -127,7 +125,7 @@ build_initrd() {
         fi
     done
 
-    # shared libraries for everything we copied
+    # shared libraries
     info "Copying shared libraries..."
     copy_libs "$ISO_INITRD/sbin/galactica-installer"
     for f in "$ISO_INITRD/sbin/"*; do
@@ -135,7 +133,7 @@ build_initrd() {
     done
     copy_libs "$ISO_INITRD/bin/busybox"
 
-    # essential libc/linker — find and copy explicitly
+    # essential libc/linker
     for lib in libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 libgcc_s.so.1; do
         P=$(find /lib /lib64 /usr/lib /usr/lib64 -name "$lib" 2>/dev/null | head -1)
         if [[ -n "$P" ]]; then
@@ -154,6 +152,22 @@ build_initrd() {
     done
     ok "libraries copied"
 
+    # virtio kernel modules (needed for /sys/block to see virtio disks)
+    info "Copying virtio kernel modules..."
+    KVER=$(uname -r)
+    mkdir -p "$ISO_INITRD/lib/modules/$KVER"
+    for mod in virtio virtio_pci virtio_blk virtio_ring virtio_net; do
+        find /lib/modules/$KVER -name "${mod}.ko*" 2>/dev/null | while read -r m; do
+            mkdir -p "$ISO_INITRD$(dirname $m)"
+            cp "$m" "$ISO_INITRD$m" 2>/dev/null && echo "  module: $mod" || true
+        done
+    done
+    # Copy modules.dep so modprobe works
+    cp /lib/modules/$KVER/modules.dep     "$ISO_INITRD/lib/modules/$KVER/" 2>/dev/null || true
+    cp /lib/modules/$KVER/modules.alias   "$ISO_INITRD/lib/modules/$KVER/" 2>/dev/null || true
+    cp /lib/modules/$KVER/modules.symbols "$ISO_INITRD/lib/modules/$KVER/" 2>/dev/null || true
+    ok "virtio modules copied"
+
     # CA certs
     mkdir -p "$ISO_INITRD/etc/ssl/certs"
     for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
@@ -166,8 +180,9 @@ build_initrd() {
     sudo mknod -m 666 "$ISO_INITRD/dev/zero"    c 1 5  2>/dev/null || true
     sudo mknod -m 666 "$ISO_INITRD/dev/urandom" c 1 9  2>/dev/null || true
     sudo mknod -m 666 "$ISO_INITRD/dev/tty"     c 5 0  2>/dev/null || true
+    sudo mknod -m 666 "$ISO_INITRD/dev/ptmx"    c 5 2  2>/dev/null || true
     for i in 0 1 2 3; do
-        sudo mknod -m 660 "$ISO_INITRD/dev/tty$i" c 4 "$i" 2>/dev/null || true
+        sudo mknod -m 620 "$ISO_INITRD/dev/tty$i" c 4 "$i" 2>/dev/null || true
     done
     sudo mknod -m 660 "$ISO_INITRD/dev/ttyS0" c 4 64 2>/dev/null || true
     ok "device nodes created"
@@ -182,8 +197,18 @@ build_initrd() {
 mount -t proc     proc     /proc
 mount -t sysfs    sysfs    /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t devpts   devpts   /dev/pts 2>/dev/null || true
 mount -t tmpfs    tmpfs    /run
 mount -t tmpfs    tmpfs    /tmp
+
+# Load virtio modules so /sys/block sees the disk
+modprobe virtio_ring  2>/dev/null || insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio_ring.ko* 2>/dev/null || true
+modprobe virtio       2>/dev/null || insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio.ko* 2>/dev/null || true
+modprobe virtio_pci   2>/dev/null || insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio_pci.ko* 2>/dev/null || true
+modprobe virtio_blk   2>/dev/null || insmod /lib/modules/$(uname -r)/kernel/drivers/block/virtio_blk.ko* 2>/dev/null || true
+
+# Wait for block devices to appear
+sleep 2
 
 ip link set lo up 2>/dev/null
 
@@ -205,23 +230,20 @@ export TERM=linux
 export HOME=/root
 export PATH=/usr/bin:/usr/sbin:/bin:/sbin
 
+# Set up TTY properly
+chown root:tty /dev/tty1 2>/dev/null || true
+chmod 620 /dev/tty1 2>/dev/null || true
+
 clear
-echo ""
-echo "  Galactica Linux Installer"
-echo "  Loading..."
-echo ""
-sleep 1
 
-# Debug: test basic things before launching installer
-echo "[init] mount done"
-echo "[init] testing shell..."
-ls /sbin/galactica-installer && echo "[init] installer binary found" || echo "[init] installer binary MISSING"
-ls /bin/sh && echo "[init] shell found" || echo "[init] shell MISSING"
-echo "[init] ldd check:"
-ldd /sbin/galactica-installer 2>&1 || echo "[init] ldd failed"
-echo "[init] launching installer..."
+# Find the active console and launch installer with full TTY control
+CONSOLE=$(cat /sys/class/tty/console/active 2>/dev/null | awk '{print $NF}')
+CONSOLE_DEV="/dev/${CONSOLE:-tty0}"
+chown root:tty "$CONSOLE_DEV" 2>/dev/null || true
+chmod 620 "$CONSOLE_DEV" 2>/dev/null || true
 
-/sbin/galactica-installer
+exec setsid sh -c "exec /sbin/galactica-installer <$CONSOLE_DEV >$CONSOLE_DEV 2>$CONSOLE_DEV"
+
 echo ""
 echo "[init] installer exited with code $?"
 echo "[init] dropping to debug shell"
@@ -240,7 +262,7 @@ INIT_EOF
 assemble_iso_root() {
     step 4 6 "Assemble ISO Root"
 
-    rm -rf "$ISO_ROOT"
+    sudo rm -rf "$ISO_ROOT"
     mkdir -p "$ISO_ROOT/boot/grub"
 
     if [[ -n "$KERNEL_SRC" && -f "$KERNEL_SRC" ]]; then
@@ -255,7 +277,12 @@ assemble_iso_root() {
 
     if [[ -d "$GALACTICA_BUILD" ]]; then
         info "Embedding galactica-build into ISO..."
-        cp -a "$GALACTICA_BUILD" "$ISO_ROOT/galactica-build"
+        sudo cp -a "$GALACTICA_BUILD" "$ISO_ROOT/galactica-build"
+        # Fix permissions so xorriso can read all files
+        sudo chmod 644 "$ISO_ROOT/galactica-build/etc/shadow"   2>/dev/null || true
+        sudo chmod 644 "$ISO_ROOT/galactica-build/etc/sudoers"  2>/dev/null || true
+        sudo chmod -R a+rX "$ISO_ROOT/galactica-build/root"     2>/dev/null || true
+        sudo chown -R "$USER:$USER" "$ISO_ROOT"                 2>/dev/null || true
         ok "galactica-build embedded ($(du -sh "$ISO_ROOT/galactica-build" | cut -f1))"
     else
         die "galactica-build not found — run build-and-launch.sh first"
@@ -268,12 +295,7 @@ set timeout=5
 set default=0
 
 menuentry "Install Galactica Linux" {
-    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0 quiet
-    initrd /boot/initrd.img
-}
-
-menuentry "Install Galactica Linux (serial console)" {
-    linux  /boot/vmlinuz root=/dev/ram0 rw console=ttyS0,115200
+    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0 console=ttyS0,115200
     initrd /boot/initrd.img
 }
 

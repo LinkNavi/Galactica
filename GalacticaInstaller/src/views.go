@@ -24,7 +24,10 @@ func (m Model) viewWelcome() string {
 		b.WriteString(center(testInfo, m.width))
 		b.WriteString("\n\n")
 	}
-
+if m.err != nil {
+    b.WriteString(center(errorStyle.Render("Error: "+m.err.Error()), m.width))
+    b.WriteString("\n\n")
+}
 	welcome := "Welcome to the Galactica installer!"
 	b.WriteString(center(welcome, m.width))
 	b.WriteString("\n\n")
