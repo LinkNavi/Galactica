@@ -1,0 +1,48 @@
+#!/bin/sh
+mount -t proc     proc     /proc
+mount -t sysfs    sysfs    /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t tmpfs    tmpfs    /run
+mount -t tmpfs    tmpfs    /tmp
+
+ip link set lo up 2>/dev/null
+
+for iface in eth0 ens3 enp0s3 enp0s2; do
+    if [ -e "/sys/class/net/$iface" ]; then
+        ip link set "$iface" up
+        udhcpc -i "$iface" -n -q -t 5 -T 3 2>/dev/null &
+        break
+    fi
+done
+
+mkdir -p /cdrom /galactica-build
+for dev in /dev/sr0 /dev/sr1 /dev/cdrom; do
+    mount -t iso9660 -o ro "$dev" /cdrom 2>/dev/null && break
+done
+mount --bind /cdrom/galactica-build /galactica-build 2>/dev/null || true
+
+export TERM=linux
+export HOME=/root
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+
+clear
+echo ""
+echo "  Galactica Linux Installer"
+echo "  Loading..."
+echo ""
+sleep 1
+
+# Debug: test basic things before launching installer
+echo "[init] mount done"
+echo "[init] testing shell..."
+ls /sbin/galactica-installer && echo "[init] installer binary found" || echo "[init] installer binary MISSING"
+ls /bin/sh && echo "[init] shell found" || echo "[init] shell MISSING"
+echo "[init] ldd check:"
+ldd /sbin/galactica-installer 2>&1 || echo "[init] ldd failed"
+echo "[init] launching installer..."
+
+/sbin/galactica-installer
+echo ""
+echo "[init] installer exited with code $?"
+echo "[init] dropping to debug shell"
+exec /bin/sh

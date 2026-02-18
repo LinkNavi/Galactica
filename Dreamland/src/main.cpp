@@ -258,10 +258,8 @@ class Dreamland {
   bool parse_arch_db_with_deps(const std::string &db, const std::string &repo) {
     std::string dir = db_cache_dir + "/" + repo;
 
-    // Remove existing directory if it exists to ensure clean extraction
     std::error_code ec;
     if (fs::exists(dir)) {
-      dbg("Removing old " + repo + " database directory");
       fs::remove_all(dir, ec);
     }
 
@@ -279,8 +277,6 @@ class Dreamland {
         continue;
 
       std::string desc = e.path().string() + "/desc";
-      std::string depends = e.path().string() + "/depends";
-
       if (!fs::exists(desc))
         continue;
 
@@ -288,16 +284,23 @@ class Dreamland {
       p.source = PackageSource::ARCH_BINARY;
       p.repo = repo;
 
-      // Parse desc file
       std::ifstream f(desc);
       std::string l, sec;
       while (std::getline(f, l)) {
-        if (l.empty())
+        // trim
+        l.erase(0, l.find_first_not_of(" \t\r\n"));
+        l.erase(l.find_last_not_of(" \t\r\n") + 1);
+
+        if (l.empty()) {
+          sec = "";
           continue;
+        }
+
         if (l[0] == '%' && l.back() == '%') {
           sec = l.substr(1, l.size() - 2);
           continue;
         }
+
         if (sec == "NAME")
           p.name = l;
         else if (sec == "VERSION")
@@ -311,31 +314,19 @@ class Dreamland {
             p.size = std::stoull(l);
           } catch (...) {
           }
+        else if (sec == "DEPENDS") {
+          // strip version constraints e.g. libreadline.so=8-64
+          size_t pos = l.find_first_of(">=<");
+          std::string dep = (pos != std::string::npos) ? l.substr(0, pos) : l;
+          // strip .so suffixes to get package name
+          size_t so_pos = dep.find(".so");
+          if (so_pos != std::string::npos)
+            dep = dep.substr(0, so_pos);
+          if (!dep.empty())
+            p.dependencies.push_back(dep);
+        }
       }
       f.close();
-
-      // Parse depends file if it exists
-      if (fs::exists(depends)) {
-        std::ifstream df(depends);
-        std::string dl, dsec;
-        while (std::getline(df, dl)) {
-          if (dl.empty())
-            continue;
-          if (dl[0] == '%' && dl.back() == '%') {
-            dsec = dl.substr(1, dl.size() - 2);
-            continue;
-          }
-          if (dsec == "DEPENDS") {
-            // Strip version constraints
-            size_t pos = dl.find_first_of(">=<");
-            if (pos != std::string::npos) {
-              dl = dl.substr(0, pos);
-            }
-            p.dependencies.push_back(dl);
-          }
-        }
-        df.close();
-      }
 
       if (!p.name.empty() && packages.find(p.name) == packages.end()) {
         packages[p.name] = p;
@@ -468,133 +459,90 @@ class Dreamland {
     }
   }
 
-std::string resolve_lib_to_pkg(const std::string& dep) {
+  std::string resolve_lib_to_pkg(const std::string &dep) {
     // If it's a .so file, try to find the package
     if (dep.find(".so") != std::string::npos) {
-        std::string base = dep.substr(0, dep.find(".so"));
-        
-        // Try: libcurl.so -> libcurl
-        if (packages.count(base)) return base;
-        
-        // Try: libcurl.so -> curl (strip "lib" prefix)
-        if (base.substr(0, 3) == "lib") {
-            std::string without_lib = base.substr(3);
-            if (packages.count(without_lib)) return without_lib;
-        }
-        
-        // Not found, return original
-        dbg("Could not resolve library: " + dep);
-    }
-    
-    return dep;
-}
+      std::string base = dep.substr(0, dep.find(".so"));
 
-std::vector<std::string>
-resolve_dependencies(const std::string &pkg_name,
-                     std::set<std::string> &resolved,
-                     std::set<std::string> &visited) {
+      // Try: libcurl.so -> libcurl
+      if (packages.count(base))
+        return base;
+
+      // Try: libcurl.so -> curl (strip "lib" prefix)
+      if (base.substr(0, 3) == "lib") {
+        std::string without_lib = base.substr(3);
+        if (packages.count(without_lib))
+          return without_lib;
+      }
+
+      // Not found, return original
+      dbg("Could not resolve library: " + dep);
+    }
+
+    return dep;
+  }
+
+  std::vector<std::string>
+  resolve_dependencies(const std::string &pkg_name,
+                       std::set<std::string> &resolved,
+                       std::set<std::string> &visited) {
     std::vector<std::string> install_order;
 
     // Avoid circular dependencies
     if (visited.count(pkg_name)) {
-        return install_order;
+      return install_order;
     }
     visited.insert(pkg_name);
 
     // Skip if already installed
     if (installed.count(pkg_name)) {
-        resolved.insert(pkg_name);
-        return install_order;
+      resolved.insert(pkg_name);
+      return install_order;
     }
 
     // Find package in database
     auto it = packages.find(pkg_name);
     if (it == packages.end()) {
-        warn("Dependency not found in database: " + pkg_name);
-        return install_order;
+      warn("Dependency not found in database: " + pkg_name);
+      return install_order;
     }
 
     const Package &pkg = it->second;
 
-    // For Arch packages, we need to download to get dependencies
     if (pkg.source == PackageSource::ARCH_BINARY) {
-        std::string cached = pkg_cache_dir + "/" + pkg.filename;
-
-        if (!fs::exists(cached)) {
-            dbg("Downloading " + pkg_name + " to resolve dependencies...");
-
-            bool downloaded = false;
-            for (auto &mirror : ARCH_MIRRORS) {
-                std::string url =
-                    mirror + "/" + pkg.repo + "/os/x86_64/" + pkg.filename;
-                dbg("Trying mirror: " + mirror);
-
-                if (dl_file(url, cached)) {
-                    downloaded = true;
-                    dbg("Downloaded from: " + mirror);
-                    break;
-                }
-            }
-
-            if (!downloaded) {
-                // Try to get dependencies from the database 'depends' file instead
-                warn("Could not download " + pkg_name +
-                     ", using database dependencies");
-
-                // Use dependencies from parse_arch_db_with_deps if available
-                for (const auto &dep : pkg.dependencies) {
-                    std::string resolved_dep = resolve_lib_to_pkg(dep);
-                    if (!resolved.count(resolved_dep)) {
-                        auto dep_order = resolve_dependencies(resolved_dep, resolved, visited);
-                        install_order.insert(install_order.end(), dep_order.begin(), dep_order.end());
-                    }
-                }
-
-                // Still add this package to install order
-                if (!resolved.count(pkg_name)) {
-                    install_order.push_back(pkg_name);
-                    resolved.insert(pkg_name);
-                }
-
-                return install_order;
-            }
+      // Use deps from database directly, skip downloading
+      for (const auto &dep : pkg.dependencies) {
+        std::string resolved_dep = resolve_lib_to_pkg(dep);
+        if (!resolved.count(resolved_dep)) {
+          auto dep_order =
+              resolve_dependencies(resolved_dep, resolved, visited);
+          install_order.insert(install_order.end(), dep_order.begin(),
+                               dep_order.end());
         }
-
-        // Extract dependencies from .PKGINFO
-        std::vector<std::string> deps = extract_pkginfo_deps(cached);
-
-        // Recursively resolve dependencies
-        for (const auto &dep : deps) {
-            std::string resolved_dep = resolve_lib_to_pkg(dep);
-            if (!resolved.count(resolved_dep)) {
-                auto dep_order =
-                    resolve_dependencies(resolved_dep, resolved, visited);
-                install_order.insert(install_order.end(), dep_order.begin(),
-                                   dep_order.end());
-            }
-        }
+      }
     } else if (pkg.source == PackageSource::GALACTICA) {
-        // For Galactica packages, use dependencies from .pkg file
-        for (const auto &dep : pkg.dependencies) {
-            std::string resolved_dep = resolve_lib_to_pkg(dep);
-            if (!resolved.count(resolved_dep)) {
-                auto dep_order = resolve_dependencies(resolved_dep, resolved, visited);
-                install_order.insert(install_order.end(), dep_order.begin(),
-                                   dep_order.end());
-            }
+      // For Galactica packages, use dependencies from .pkg file
+      for (const auto &dep : pkg.dependencies) {
+        std::string resolved_dep = resolve_lib_to_pkg(dep);
+        if (!resolved.count(resolved_dep)) {
+          auto dep_order =
+              resolve_dependencies(resolved_dep, resolved, visited);
+          install_order.insert(install_order.end(), dep_order.begin(),
+                               dep_order.end());
         }
+      }
     }
 
     // Add this package to install order
     if (!resolved.count(pkg_name)) {
-        install_order.push_back(pkg_name);
-        resolved.insert(pkg_name);
+      install_order.push_back(pkg_name);
+      resolved.insert(pkg_name);
     }
 
     return install_order;
-}
+  }
 
-std::vector<std::string> extract_pkginfo_deps(const std::string &pkg_path) {
+  std::vector<std::string> extract_pkginfo_deps(const std::string &pkg_path) {
     std::vector<std::string> deps;
 
     struct archive *a = archive_read_new();
@@ -602,70 +550,69 @@ std::vector<std::string> extract_pkginfo_deps(const std::string &pkg_path) {
     archive_read_support_format_all(a);
 
     if (archive_read_open_filename(a, pkg_path.c_str(), 10240) != ARCHIVE_OK) {
-        archive_read_free(a);
-        return deps;
+      archive_read_free(a);
+      return deps;
     }
 
     struct archive_entry *entry;
     bool found_pkginfo = false;
 
     while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
-        std::string pathname = archive_entry_pathname(entry);
+      std::string pathname = archive_entry_pathname(entry);
 
-        if (pathname == ".PKGINFO") {
-            found_pkginfo = true;
+      if (pathname == ".PKGINFO") {
+        found_pkginfo = true;
 
-            // Read the entire .PKGINFO file
-            size_t size = archive_entry_size(entry);
-            std::vector<char> buffer(size + 1);
+        // Read the entire .PKGINFO file
+        size_t size = archive_entry_size(entry);
+        std::vector<char> buffer(size + 1);
 
-            ssize_t bytes_read = archive_read_data(a, buffer.data(), size);
-            if (bytes_read > 0) {
-                buffer[bytes_read] = '\0';
-                std::string content(buffer.data());
+        ssize_t bytes_read = archive_read_data(a, buffer.data(), size);
+        if (bytes_read > 0) {
+          buffer[bytes_read] = '\0';
+          std::string content(buffer.data());
 
-                // Parse dependencies from .PKGINFO
-                std::istringstream iss(content);
-                std::string line;
+          // Parse dependencies from .PKGINFO
+          std::istringstream iss(content);
+          std::string line;
 
-                while (std::getline(iss, line)) {
-                    // Dependencies are in format: depend = package-name>=version
-                    // or: depend = package-name
-                    if (line.find("depend = ") == 0) {
-                        std::string dep = line.substr(9); // Skip "depend = "
+          while (std::getline(iss, line)) {
+            // Dependencies are in format: depend = package-name>=version
+            // or: depend = package-name
+            if (line.find("depend = ") == 0) {
+              std::string dep = line.substr(9); // Skip "depend = "
 
-                        // Strip version constraints (>=, <=, =, <, >)
-                        size_t pos = dep.find_first_of(">=<");
-                        if (pos != std::string::npos) {
-                            dep = dep.substr(0, pos);
-                        }
+              // Strip version constraints (>=, <=, =, <, >)
+              size_t pos = dep.find_first_of(">=<");
+              if (pos != std::string::npos) {
+                dep = dep.substr(0, pos);
+              }
 
-                        // Trim whitespace
-                        dep.erase(0, dep.find_first_not_of(" \t\r\n"));
-                        dep.erase(dep.find_last_not_of(" \t\r\n") + 1);
+              // Trim whitespace
+              dep.erase(0, dep.find_first_not_of(" \t\r\n"));
+              dep.erase(dep.find_last_not_of(" \t\r\n") + 1);
 
-                        if (!dep.empty()) {
-                            deps.push_back(dep);
-                        }
-                    }
-                }
+              if (!dep.empty()) {
+                deps.push_back(dep);
+              }
             }
-            break;
+          }
         }
+        break;
+      }
     }
 
     archive_read_close(a);
     archive_read_free(a);
 
     if (!found_pkginfo) {
-        dbg("No .PKGINFO found in " + pkg_path);
+      dbg("No .PKGINFO found in " + pkg_path);
     } else {
-        dbg("Found " + std::to_string(deps.size()) + " dependencies in .PKGINFO");
+      dbg("Found " + std::to_string(deps.size()) + " dependencies in .PKGINFO");
     }
 
     return deps;
-}  
-
+  }
   bool fetch_galactica() {
     status("Fetching Galactica index...");
     std::string content;
@@ -1227,6 +1174,66 @@ public:
     unload_mods();
     curl_global_cleanup();
   }
+  void upgrade() {
+    banner();
+    load_installed();
+    if (packages.empty())
+      load_pkg_db();
+
+    std::vector<std::pair<Package, Package>>
+        upgradeable; // {installed, available}
+
+    for (auto &[name, inst] : installed) {
+      auto it = packages.find(name);
+      if (it == packages.end())
+        continue;
+
+      // Simple version string comparison
+      if (it->second.version != inst.version) {
+        upgradeable.push_back({inst, it->second});
+      }
+    }
+
+    if (upgradeable.empty()) {
+      ok("System is up to date");
+      return;
+    }
+
+    std::cout << "\n"
+              << CYAN << "Packages to upgrade (" << upgradeable.size()
+              << "):" << RESET << "\n";
+    for (auto &[old_pkg, new_pkg] : upgradeable) {
+      std::cout << "  " << PINK << old_pkg.name << RESET << " " << YELLOW
+                << old_pkg.version << RESET << " -> " << GREEN
+                << new_pkg.version << RESET << "\n";
+    }
+
+    std::cout << "\nProceed? [Y/n]: ";
+    std::string response;
+    std::getline(std::cin, response);
+    if (!response.empty() && response[0] != 'y' && response[0] != 'Y') {
+      std::cout << "Upgrade cancelled.\n";
+      return;
+    }
+
+    for (auto &[old_pkg, new_pkg] : upgradeable) {
+      status("Upgrading " + old_pkg.name + "...");
+      // Remove old manifest files
+      std::string mf = manifest_dir + "/" + old_pkg.name + ".manifest";
+      if (fs::exists(mf)) {
+        std::ifstream f(mf);
+        std::string line;
+        while (std::getline(f, line)) {
+          if (!line.empty())
+            fs::remove(line);
+        }
+      }
+      installed.erase(old_pkg.name);
+      install_arch(new_pkg);
+    }
+
+    ok("Upgrade complete");
+  }
 
   void sync() {
     banner();
@@ -1438,6 +1445,7 @@ public:
     std::cout << "  install <pkg>   Install package or module-<n>\n";
     std::cout << "  uninstall <pkg> Uninstall package or module\n";
     std::cout << "  search <q>      Search packages\n";
+    std::cout << "  upgrade         Upgrade all installed packages\n";
     std::cout << "  list            List installed\n";
     std::cout << "  modules         List modules\n";
     if (!modules.empty()) {
@@ -1469,6 +1477,8 @@ int main(int argc, char *argv[]) {
     return dl.uninstall(argv[2]) ? 0 : 1;
   else if (cmd == "list")
     dl.list();
+  else if (cmd == "upgrade")
+    dl.upgrade();
   else if (cmd == "modules")
     dl.list_mods();
   else {
