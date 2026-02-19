@@ -4,7 +4,7 @@ galactica-rootfs.img
 kernel-cache/
 linux-*/
 *.log
-
+test-install.img
 # Temporary files
 mnt_tmp/
 .config.backup

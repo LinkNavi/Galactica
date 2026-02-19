@@ -855,7 +855,27 @@ create_system_files() {
 root:x:0:0:root:/root:/bin/sh
 nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
 EOF
+cat > "$TARGET_ROOT/etc/airride/services/modules.service" << 'EOF'
+[Service]
+name=modules
+description=Load Kernel Modules
+type=oneshot
+exec_start=/sbin/load-modules
+autostart=true
+parallel=true
 
+[Dependencies]
+EOF
+
+cat > "$TARGET_ROOT/sbin/load-modules" << 'EOF'
+#!/bin/sh
+[ -f /etc/modules ] || exit 0
+while IFS= read -r mod; do
+    case "$mod" in ''|\#*) continue ;; esac
+    modprobe "$mod" 2>/dev/null || true
+done < /etc/modules
+EOF
+chmod +x "$TARGET_ROOT/sbin/load-modules"
     cat > "$TARGET_ROOT/etc/group" << 'EOF'
 root:x:0:root
 tty:x:5:root
