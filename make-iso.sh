@@ -70,9 +70,40 @@ preflight() {
 build_installer() {
     step 2 6 "Build Installer Binary"
 
+    # Resolve GOROOT — needed when Go binary is trimmed and GOROOT is unset
+    if [[ -z "$GOROOT" ]]; then
+        GOROOT=$(go env GOROOT 2>/dev/null || true)
+    fi
+    if [[ -z "$GOROOT" ]]; then
+        GO_BIN=$(command -v go)
+        GOROOT=$(dirname "$(dirname "$(realpath "$GO_BIN")")")
+    fi
+    export GOROOT
+    export PATH="$GOROOT/bin:$PATH"
+
+    # Fix GOPROXY if empty/broken — use direct + fallback to sum DB
+    CURRENT_PROXY=$(go env GOPROXY 2>/dev/null || true)
+    if [[ -z "$CURRENT_PROXY" || "$CURRENT_PROXY" == "off" ]]; then
+        export GOPROXY="https://proxy.golang.org,direct"
+    fi
+    export GONOSUMCHECK="*"
+
     cd "$INSTALLER_DIR"
-    info "Running go build..."
-    go build -o ../iso-installer-bin ./src/ || die "go build failed"
+
+    # Download dependencies first so we can surface errors clearly
+    info "Downloading dependencies... (GOPROXY=$GOPROXY)"
+    go mod download || die "go mod download failed — check network or run: go mod vendor"
+
+    # Detect the correct package path from go.mod
+    MODULE_NAME=$(grep '^module ' go.mod 2>/dev/null | awk '{print $2}')
+    if [[ -z "$MODULE_NAME" ]]; then
+        die "Could not read module name from go.mod"
+    fi
+    info "Running go build... (module=$MODULE_NAME)"
+
+    # Build using . (current dir) — avoids wrong package path issues
+    go build -o ../iso-installer-bin . 2>/dev/null ||     go build -o ../iso-installer-bin ./src/ 2>/dev/null ||     go build -o ../iso-installer-bin "$MODULE_NAME/src" ||     die "go build failed"
+
     cd ..
     ok "Installer binary built → iso-installer-bin"
 }
@@ -105,7 +136,7 @@ build_initrd() {
     for cmd in sh ash ls cat echo cp mv rm mkdir mount umount sleep \
                grep sed awk ps kill ln chmod chown ip ifconfig ping \
                hostname uname dmesg mkswap swapon losetup dd sync udhcpc \
-               setsid chvt openvt; do
+               setsid chvt openvt clear reset; do
         ln -sf busybox "$ISO_INITRD/bin/$cmd" 2>/dev/null || true
     done
     ok "busybox installed"
@@ -152,21 +183,35 @@ build_initrd() {
     done
     ok "libraries copied"
 
-    # virtio kernel modules (needed for /sys/block to see virtio disks)
-    info "Copying virtio kernel modules..."
-    KVER=$(uname -r)
+    # kernel modules — use Galactica kernel modules, not host kernel
+    info "Copying kernel modules..."
+
+    # Find Galactica kernel version from galactica-build/lib/modules/
+    GALACTICA_MODS=$(ls "$GALACTICA_BUILD/lib/modules/" 2>/dev/null | head -1)
+    if [[ -n "$GALACTICA_MODS" ]]; then
+        KVER="$GALACTICA_MODS"
+        KMOD_SRC="$GALACTICA_BUILD/lib/modules/$KVER"
+        info "Using Galactica kernel modules: $KVER"
+    else
+        KVER=$(uname -r)
+        KMOD_SRC="/lib/modules/$KVER"
+        warn "galactica-build has no lib/modules — using host kernel modules ($KVER)"
+        warn "Fix: run 'make modules_install INSTALL_MOD_PATH=./galactica-build' in your kernel build"
+    fi
+
     mkdir -p "$ISO_INITRD/lib/modules/$KVER"
-    for mod in virtio virtio_pci virtio_blk virtio_ring virtio_net; do
-        find /lib/modules/$KVER -name "${mod}.ko*" 2>/dev/null | while read -r m; do
-            mkdir -p "$ISO_INITRD$(dirname $m)"
-            cp "$m" "$ISO_INITRD$m" 2>/dev/null && echo "  module: $mod" || true
+    for mod in virtio virtio_pci virtio_blk virtio_ring virtio_net squashfs isofs scsi_mod sd_mod; do
+        find "$KMOD_SRC" -name "${mod}.ko*" 2>/dev/null | while read -r m; do
+            rel="${m#$KMOD_SRC/}"
+            dest="$ISO_INITRD/lib/modules/$KVER/$rel"
+            mkdir -p "$(dirname "$dest")"
+            cp "$m" "$dest" 2>/dev/null && echo "  module: $mod" || true
         done
     done
-    # Copy modules.dep so modprobe works
-    cp /lib/modules/$KVER/modules.dep     "$ISO_INITRD/lib/modules/$KVER/" 2>/dev/null || true
-    cp /lib/modules/$KVER/modules.alias   "$ISO_INITRD/lib/modules/$KVER/" 2>/dev/null || true
-    cp /lib/modules/$KVER/modules.symbols "$ISO_INITRD/lib/modules/$KVER/" 2>/dev/null || true
-    ok "virtio modules copied"
+    for f in modules.dep modules.alias modules.symbols modules.builtin modules.order; do
+        [[ -f "$KMOD_SRC/$f" ]] && cp "$KMOD_SRC/$f" "$ISO_INITRD/lib/modules/$KVER/" || true
+    done
+    ok "kernel modules copied (kernel: $KVER)"
 
     # CA certs
     mkdir -p "$ISO_INITRD/etc/ssl/certs"
@@ -207,6 +252,12 @@ modprobe virtio       2>/dev/null || insmod /lib/modules/$(uname -r)/kernel/driv
 modprobe virtio_pci   2>/dev/null || insmod /lib/modules/$(uname -r)/kernel/drivers/virtio/virtio_pci.ko* 2>/dev/null || true
 modprobe virtio_blk   2>/dev/null || insmod /lib/modules/$(uname -r)/kernel/drivers/block/virtio_blk.ko* 2>/dev/null || true
 
+# Load storage + filesystem modules
+modprobe scsi_mod  2>/dev/null || true
+modprobe sd_mod    2>/dev/null || true
+modprobe squashfs  2>/dev/null || true
+modprobe isofs     2>/dev/null || insmod /lib/modules/$(uname -r)/kernel/fs/isofs/isofs.ko* 2>/dev/null || true
+
 # Wait for block devices to appear
 sleep 2
 
@@ -220,11 +271,39 @@ for iface in eth0 ens3 enp0s3 enp0s2; do
     fi
 done
 
-mkdir -p /cdrom /galactica-build
-for dev in /dev/sr0 /dev/sr1 /dev/cdrom; do
-    mount -t iso9660 -o ro "$dev" /cdrom 2>/dev/null && break
+mkdir -p /mnt/iso /mnt/sqf /galactica-build
+
+# Mount the ISO we booted from — galactica.sqf is embedded inside it
+# On USB, the device shows up as a regular block device (vda, sda, etc.)
+ISO_MOUNTED=0
+echo "[init] Scanning for Galactica installer ISO..."
+
+for dev in /dev/vda /dev/sda /dev/vdb /dev/sdb /dev/vdc /dev/sdc; do
+    [ -b "$dev" ] || continue
+    if mount -t iso9660 -o ro "$dev" /mnt/iso 2>/dev/null; then
+        if [ -f "/mnt/iso/galactica.sqf" ]; then
+            echo "[init] Found galactica.sqf on $dev"
+            ISO_MOUNTED=1
+            break
+        fi
+        umount /mnt/iso 2>/dev/null
+    fi
 done
-mount --bind /cdrom/galactica-build /galactica-build 2>/dev/null || true
+
+if [ "$ISO_MOUNTED" = "1" ]; then
+    if mount -t squashfs -o ro /mnt/iso/galactica.sqf /mnt/sqf 2>/dev/null; then
+        mount --bind /mnt/sqf /galactica-build
+        echo "[init] galactica-build ready"
+    else
+        echo "[init] ERROR: squashfs mount failed"
+        echo "[init] Available filesystems:"
+        cat /proc/filesystems
+    fi
+else
+    echo "[init] ERROR: Could not find galactica.sqf — no ISO9660 device found"
+    echo "[init] Available block devices:"
+    ls /dev/[sv]d* /dev/vd* 2>/dev/null || echo "none"
+fi
 
 export TERM=linux
 export HOME=/root
@@ -242,12 +321,14 @@ CONSOLE_DEV="/dev/${CONSOLE:-tty0}"
 chown root:tty "$CONSOLE_DEV" 2>/dev/null || true
 chmod 620 "$CONSOLE_DEV" 2>/dev/null || true
 
-exec setsid sh -c "exec /sbin/galactica-installer <$CONSOLE_DEV >$CONSOLE_DEV 2>$CONSOLE_DEV"
-
-echo ""
-echo "[init] installer exited with code $?"
-echo "[init] dropping to debug shell"
-exec /bin/sh
+while true; do
+    setsid sh -c "exec /sbin/galactica-installer <$CONSOLE_DEV >$CONSOLE_DEV 2>$CONSOLE_DEV"
+    EXIT_CODE=$?
+    echo ""
+    echo "[init] installer exited with code $EXIT_CODE"
+    echo "[init] dropping to shell — type 'exit' to relaunch installer"
+    sh <$CONSOLE_DEV >$CONSOLE_DEV 2>$CONSOLE_DEV
+done
 INIT_EOF
     chmod 755 "$ISO_INITRD/init"
 
@@ -275,20 +356,18 @@ assemble_iso_root() {
         warn "Using host kernel: $HOST_KERNEL"
     fi
 
-    if [[ -d "$GALACTICA_BUILD" ]]; then
-        info "Embedding galactica-build into ISO..."
-        sudo cp -a "$GALACTICA_BUILD" "$ISO_ROOT/galactica-build"
-        # Fix permissions so xorriso can read all files
-        sudo chmod 644 "$ISO_ROOT/galactica-build/etc/shadow"   2>/dev/null || true
-        sudo chmod 644 "$ISO_ROOT/galactica-build/etc/sudoers"  2>/dev/null || true
-        sudo chmod -R a+rX "$ISO_ROOT/galactica-build/root"     2>/dev/null || true
-        sudo chown -R "$USER:$USER" "$ISO_ROOT"                 2>/dev/null || true
-        ok "galactica-build embedded ($(du -sh "$ISO_ROOT/galactica-build" | cut -f1))"
-    else
-        die "galactica-build not found — run build-and-launch.sh first"
-    fi
-
     cp "$BUILD_DIR/initrd.img" "$ISO_ROOT/boot/initrd.img"
+
+    # Build squashfs and embed directly into the ISO
+    info "Building squashfs from galactica-build..."
+    sudo mksquashfs "$GALACTICA_BUILD" "$ISO_ROOT/galactica.sqf" \
+        -comp zstd -Xcompression-level 6 \
+        -noappend -quiet 2>/dev/null || \
+    sudo mksquashfs "$GALACTICA_BUILD" "$ISO_ROOT/galactica.sqf" \
+        -comp gzip -noappend -quiet || \
+    die "mksquashfs failed"
+    sudo chown "$USER:$USER" "$ISO_ROOT/galactica.sqf"
+    ok "squashfs embedded in ISO ($(du -sh "$ISO_ROOT/galactica.sqf" | cut -f1))"
 
     cat > "$ISO_ROOT/boot/grub/grub.cfg" << 'GRUB_EOF'
 set timeout=5
@@ -310,6 +389,8 @@ menuentry "Boot from first disk" {
 GRUB_EOF
     ok "GRUB config written"
 }
+
+# ── New: build squashfs source image ──────────────────────────────
 
 build_iso() {
     step 5 6 "Build ISO with grub-mkrescue"
@@ -348,14 +429,13 @@ build_iso
 cleanup_build
 
 echo ""
-echo -e "${GREEN}${BOLD}=== ISO Build Complete! ===${NC}"
+echo -e "${GREEN}${BOLD}=== Build Complete! ===${NC}"
 echo ""
-echo -e "  Output:  ${CYAN}$OUTPUT_ISO${NC}"
-echo -e "  Size:    $(du -sh "$OUTPUT_ISO" | cut -f1)"
+echo -e "  Output: ${CYAN}$OUTPUT_ISO${NC}  ($(du -sh "$OUTPUT_ISO" | cut -f1))"
 echo ""
 echo "Test with QEMU:"
-echo -e "  ${YELLOW}qemu-system-x86_64 -enable-kvm -m 2G -cdrom $OUTPUT_ISO -boot d -hda test-install.img${NC}"
+echo -e "  ${YELLOW}./test.sh${NC}"
 echo ""
 echo "Write to USB:"
-echo -e "  ${YELLOW}sudo dd if=$OUTPUT_ISO of=/dev/sdX bs=4M status=progress${NC}"
+echo -e "  ${YELLOW}sudo dd if=$OUTPUT_ISO of=/dev/sdX bs=4M status=progress && sync${NC}"
 echo ""

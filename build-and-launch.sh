@@ -94,198 +94,79 @@ build_kernel() {
         make mrproper 2>/dev/null || true
         make tinyconfig || make allnoconfig
         
-        cat >> .config << 'EOF'
+       cat >> .config << 'EOF'
 # ============================================
-# WIRELESS CORE SUPPORT
+# ARCHITECTURE
 # ============================================
-CONFIG_WIRELESS=y
-CONFIG_WIRELESS_EXT=y
-CONFIG_WEXT_CORE=y
-CONFIG_WEXT_PROC=y
-CONFIG_WEXT_PRIV=y
-CONFIG_WEXT_SPY=y
-
-# cfg80211 wireless configuration API
-CONFIG_CFG80211=y
-CONFIG_CFG80211_WEXT=y
-CONFIG_CFG80211_DEFAULT_PS=y
-
-# nl80211 testmode command
-CONFIG_NL80211_TESTMODE=y
-
-# ============================================
-# MAC80211 STACK
-# ============================================
-CONFIG_MAC80211=y
-CONFIG_MAC80211_HAS_RC=y
-CONFIG_MAC80211_RC_MINSTREL=y
-CONFIG_MAC80211_RC_DEFAULT_MINSTREL=y
-CONFIG_MAC80211_RC_DEFAULT="minstrel_ht"
-CONFIG_MAC80211_LEDS=y
-
-# ============================================
-# WIRELESS DRIVERS (as modules)
-# ============================================
-
-# Intel WiFi (iwlwifi) - Very common in laptops
-CONFIG_IWLWIFI=m
-CONFIG_IWLDVM=m          # Intel Wireless WiFi DVM Firmware support
-CONFIG_IWLMVM=m          # Intel Wireless WiFi MVM Firmware support
-CONFIG_IWLWIFI_LEDS=y
-CONFIG_IWLWIFI_OPMODE_MODULAR=y
-
-# Atheros (ath9k) - Common in many devices
-CONFIG_ATH_COMMON=m
-CONFIG_ATH9K=m
-CONFIG_ATH9K_HW=m
-CONFIG_ATH9K_COMMON=m
-CONFIG_ATH9K_PCI=m
-CONFIG_ATH9K_LEDS=y
-
-# Realtek (rtl8192) - Common in USB adapters
-CONFIG_RTL8192CE=m
-CONFIG_RTL8192CU=m
-CONFIG_RTL8192DE=m
-CONFIG_RTL8192SE=m
-CONFIG_RTL8192C_COMMON=m
-
-# Broadcom (b43) - Common in older devices
-CONFIG_B43=m
-CONFIG_B43_PHY_N=y
-CONFIG_B43_PHY_LP=y
-CONFIG_B43_LEDS=y
-
-# Ralink/MediaTek (rt2x00) - USB adapters
-CONFIG_RT2X00=m
-CONFIG_RT2800USB=m
-CONFIG_RT2800PCI=m
-
-# ============================================
-# ADDITIONAL WIFI VENDOR SUPPORT
-# ============================================
-CONFIG_WLAN=y
-CONFIG_WLAN_VENDOR_ADMTEK=y
-CONFIG_WLAN_VENDOR_ATH=y
-CONFIG_WLAN_VENDOR_ATMEL=y
-CONFIG_WLAN_VENDOR_BROADCOM=y
-CONFIG_WLAN_VENDOR_INTEL=y
-CONFIG_WLAN_VENDOR_INTERSIL=y
-CONFIG_WLAN_VENDOR_MARVELL=y
-CONFIG_WLAN_VENDOR_MEDIATEK=y
-CONFIG_WLAN_VENDOR_RALINK=y
-CONFIG_WLAN_VENDOR_REALTEK=y
-CONFIG_WLAN_VENDOR_RSI=y
-CONFIG_WLAN_VENDOR_ZYDAS=y
-
-# ============================================
-# LED SUPPORT (for WiFi status LEDs)
-# ============================================
-CONFIG_LEDS_CLASS=y
-CONFIG_LEDS_TRIGGERS=y
-CONFIG_LEDS_TRIGGER_PHY=y
-
-# ============================================
-# RFKILL (WiFi hardware switches)
-# ============================================
-CONFIG_RFKILL=y
-CONFIG_RFKILL_INPUT=y
-CONFIG_RFKILL_LEDS=y
-
-# ============================================
-# POWER MANAGEMENT FOR WIRELESS
-# ============================================
-CONFIG_PM=y
-CONFIG_PM_SLEEP=y
-
-# ============================================
-# CRYPTO (required by WPA/WPA2)
-# ============================================
-CONFIG_CRYPTO=y
-CONFIG_CRYPTO_ARC4=y
-CONFIG_CRYPTO_ECB=y
-CONFIG_CRYPTO_CMAC=y
-CONFIG_CRYPTO_HMAC=y
-CONFIG_CRYPTO_SHA1=y
-CONFIG_CRYPTO_SHA256=y
-CONFIG_CRYPTO_AES=y
-CONFIG_CRYPTO_CCM=y
-CONFIG_CRYPTO_GCM=y
-
-# ============================================
-# FIRMWARE LOADING
-# ============================================
-CONFIG_FW_LOADER=y
-CONFIG_FW_LOADER_USER_HELPER=y
-CONFIG_EXTRA_FIRMWARE=""
-
-		
-# Architecture
 CONFIG_64BIT=y
 CONFIG_X86_64=y
 CONFIG_SMP=y
 CONFIG_PCI=y
 CONFIG_ACPI=y
+CONFIG_ACPI_BATTERY=y
+CONFIG_ACPI_AC=y
+CONFIG_THERMAL=y
+CONFIG_CPU_FREQ=y
+CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y
 
-# Core input
-CONFIG_INPUT=y
-CONFIG_INPUT_EVDEV=y
-CONFIG_INPUT_FF_MEMLESS=y
+# ============================================
+# MODULES
+# ============================================
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_MODULE_COMPRESS_ZSTD=y
 
-# Keyboard
-CONFIG_INPUT_KEYBOARD=y
-CONFIG_KEYBOARD_ATKBD=y
+# ============================================
+# INITRAMFS
+# ============================================
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_INITRAMFS_SOURCE=""
+CONFIG_RD_GZIP=y
+CONFIG_RD_ZSTD=y
 
-# Mouse
-CONFIG_INPUT_MOUSE=y
-CONFIG_MOUSE_PS2=y
-CONFIG_MOUSE_PS2_ALPS=y
-CONFIG_MOUSE_PS2_SYNAPTICS=y
-CONFIG_MOUSE_PS2_TRACKPOINT=y
+# ============================================
+# BLOCK / STORAGE (=y, needed before initramfs mounts root)
+# ============================================
+CONFIG_BLOCK=y
+CONFIG_BLK_DEV=y
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_ATA=y
+CONFIG_ATA_PIIX=y
+CONFIG_SATA_AHCI=y
+CONFIG_BLK_DEV_NVME=m
 
-# PS/2 controller (i8042) - CRITICAL for QEMU
-CONFIG_SERIO=y
-CONFIG_SERIO_I8042=y
-CONFIG_SERIO_LIBPS2=y
-CONFIG_SERIO_SERPORT=y
-
-# USB HID (for USB keyboard/mouse)
-CONFIG_USB_SUPPORT=y
-CONFIG_USB=y
-CONFIG_USB_HID=y
-CONFIG_USB_HIDDEV=y
-CONFIG_HID=y
-CONFIG_HID_GENERIC=y
-CONFIG_USB_XHCI_HCD=y
-CONFIG_USB_EHCI_HCD=y
-CONFIG_USB_OHCI_HCD=y
-CONFIG_USB_UHCI_HCD=y
-
-# Virtio input (for virtio-keyboard-pci, virtio-mouse-pci)
+# ============================================
+# VIRTIO (=y for QEMU root disk access in initramfs)
+# ============================================
+CONFIG_VIRTIO_MENU=y
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_RING=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_PCI_LEGACY=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_SCSI_VIRTIO=y
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VIRTIO_BALLOON=y
 CONFIG_VIRTIO_INPUT=y
-# Graphics/DRM support for QEMU
-CONFIG_DRM=y
-CONFIG_DRM_KMS_HELPER=y
-CONFIG_DRM_GEM_SHMEM_HELPER=y
-CONFIG_DRM_VIRTIO_GPU=y
-CONFIG_DRM_FBDEV_EMULATION=y
-CONFIG_DRM_BOCHS=y
-CONFIG_DRM_QXL=y
-CONFIG_DRM_SIMPLEDRM=y
+CONFIG_VIRTIO_NET=m
+CONFIG_HW_RANDOM_VIRTIO=m
 
-# Framebuffer
-CONFIG_FB=y
-CONFIG_FB_VESA=y
-CONFIG_FB_EFI=y
-CONFIG_FB_SIMPLE=y
-CONFIG_FRAMEBUFFER_CONSOLE=y
-CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
+# ============================================
+# FILESYSTEMS (=y, needed before root mount)
+# ============================================
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_TMPFS=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_USE_FOR_EXT2=y
 
-# Input for X11
-CONFIG_INPUT_EVDEV=y
-CONFIG_INPUT_KEYBOARD=y
-CONFIG_INPUT_MOUSE=y
-CONFIG_INPUT_MISC=y
-# Essential
+# ============================================
+# ESSENTIAL KERNEL FEATURES
+# ============================================
 CONFIG_BINFMT_ELF=y
 CONFIG_BINFMT_SCRIPT=y
 CONFIG_MMU=y
@@ -299,36 +180,19 @@ CONFIG_SIGNALFD=y
 CONFIG_EVENTFD=y
 CONFIG_TIMERFD=y
 CONFIG_FILE_LOCKING=y
+CONFIG_SYSCTL=y
+CONFIG_KALLSYMS=y
+CONFIG_BUG=y
+CONFIG_INOTIFY_USER=y
+CONFIG_NAMESPACES=y
+CONFIG_NET_NS=y
+CONFIG_USER_NS=y
+CONFIG_PID_NS=y
+CONFIG_CGROUPS=y
 
-# Filesystems
-CONFIG_PROC_FS=y
-CONFIG_SYSFS=y
-CONFIG_TMPFS=y
-CONFIG_DEVTMPFS=y
-CONFIG_DEVTMPFS_MOUNT=y
-CONFIG_EXT4_FS=y
-CONFIG_EXT4_USE_FOR_EXT2=y
-
-# Block/Storage
-CONFIG_BLOCK=y
-CONFIG_BLK_DEV=y
-CONFIG_SCSI=y
-CONFIG_BLK_DEV_SD=y
-
-# VIRTIO (for QEMU)
-CONFIG_VIRTIO_MENU=y
-CONFIG_VIRTIO=y
-CONFIG_VIRTIO_PCI=y
-CONFIG_VIRTIO_PCI_LEGACY=y
-CONFIG_VIRTIO_BLK=y
-CONFIG_SCSI_VIRTIO=y
-CONFIG_VIRTIO_NET=y
-CONFIG_VIRTIO_CONSOLE=y
-CONFIG_VIRTIO_BALLOON=y
-CONFIG_VIRTIO_INPUT=y
-CONFIG_VIRTIO_MMIO=y
-
-# Console/TTY
+# ============================================
+# TTY / CONSOLE (=y, needed for early boot output)
+# ============================================
 CONFIG_TTY=y
 CONFIG_VT=y
 CONFIG_VT_CONSOLE=y
@@ -340,133 +204,212 @@ CONFIG_SERIAL_CORE_CONSOLE=y
 CONFIG_HW_CONSOLE=y
 CONFIG_VGA_CONSOLE=y
 CONFIG_DUMMY_CONSOLE=y
-CONFIG_FRAMEBUFFER_CONSOLE=y
 CONFIG_PRINTK=y
+CONFIG_FONT_SUPPORT=y
+CONFIG_FONTS=y
+CONFIG_FONT_8x16=y
 
 # ============================================
-# FULL NETWORKING STACK
+# INPUT (=m, mkinitcpio autodetect handles this)
+# ============================================
+CONFIG_INPUT=m
+CONFIG_INPUT_EVDEV=m
+CONFIG_INPUT_FF_MEMLESS=m
+CONFIG_INPUT_KEYBOARD=m
+CONFIG_KEYBOARD_ATKBD=m
+CONFIG_INPUT_MOUSE=m
+CONFIG_MOUSE_PS2=m
+CONFIG_MOUSE_PS2_ALPS=m
+CONFIG_MOUSE_PS2_SYNAPTICS=m
+CONFIG_MOUSE_PS2_TRACKPOINT=m
+CONFIG_INPUT_MISC=m
+CONFIG_SERIO=m
+CONFIG_SERIO_I8042=m
+CONFIG_SERIO_LIBPS2=m
+CONFIG_SERIO_SERPORT=m
+
+# ============================================
+# USB (=m, mkinitcpio autodetect handles this)
+# ============================================
+CONFIG_USB_SUPPORT=y
+CONFIG_USB=m
+CONFIG_USB_HID=m
+CONFIG_USB_HIDDEV=m
+CONFIG_HID=m
+CONFIG_HID_GENERIC=m
+CONFIG_USB_XHCI_HCD=m
+CONFIG_USB_EHCI_HCD=m
+CONFIG_USB_OHCI_HCD=m
+CONFIG_USB_UHCI_HCD=m
+CONFIG_USB_STORAGE=m
+
+# ============================================
+# GRAPHICS / DRM (=m, not needed until userspace)
+# ============================================
+CONFIG_DRM=m
+CONFIG_DRM_KMS_HELPER=m
+CONFIG_DRM_GEM_SHMEM_HELPER=m
+CONFIG_DRM_VIRTIO_GPU=m
+CONFIG_DRM_FBDEV_EMULATION=m
+CONFIG_DRM_BOCHS=m
+CONFIG_DRM_SIMPLEDRM=m
+CONFIG_FB=m
+CONFIG_FB_VESA=m
+CONFIG_FB_EFI=m
+CONFIG_FB_SIMPLE=m
+CONFIG_FRAMEBUFFER_CONSOLE=m
+CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=m
+# CONFIG_DRM_QXL is not set
+
+# ============================================
+# NETWORKING STACK (core =y, drivers =m)
 # ============================================
 CONFIG_NET=y
 CONFIG_INET=y
-CONFIG_IP_MULTICAST=y
-CONFIG_IP_ADVANCED_ROUTER=y
-CONFIG_IP_PNP=y
-CONFIG_IP_PNP_DHCP=y
-CONFIG_IP_PNP_BOOTP=y
-
-# TCP/IP
+CONFIG_IPV6=m
+CONFIG_UNIX=y
+CONFIG_PACKET=y
 CONFIG_TCP_CONG_ADVANCED=y
 CONFIG_TCP_CONG_CUBIC=y
 CONFIG_DEFAULT_TCP_CONG="cubic"
-CONFIG_IPV6=y
-
-# Packet handling
-CONFIG_PACKET=y
-CONFIG_PACKET_DIAG=y
-CONFIG_UNIX=y
-CONFIG_UNIX_DIAG=y
-CONFIG_XFRM=y
-CONFIG_XFRM_USER=y
-
-# Netfilter/Firewall (basic)
-CONFIG_NETFILTER=y
-CONFIG_NETFILTER_ADVANCED=y
-CONFIG_NF_CONNTRACK=y
-CONFIG_NF_TABLES=y
-CONFIG_NFT_CT=y
-CONFIG_NFT_COUNTER=y
-CONFIG_NFT_LOG=y
-CONFIG_NFT_NAT=y
-CONFIG_NFT_MASQ=y
-CONFIG_NF_NAT=y
-CONFIG_IP_NF_IPTABLES=y
-CONFIG_IP_NF_FILTER=y
-CONFIG_IP_NF_NAT=y
-CONFIG_IP_NF_TARGET_MASQUERADE=y
-
-# DNS/Resolver
 CONFIG_DNS_RESOLVER=y
-
-# Network device support
 CONFIG_NETDEVICES=y
 CONFIG_NET_CORE=y
 CONFIG_ETHERNET=y
-CONFIG_NET_VENDOR_INTEL=y
-CONFIG_E1000=y
-CONFIG_E1000E=y
-CONFIG_NET_VENDOR_REALTEK=y
-CONFIG_8139CP=y
-CONFIG_8139TOO=y
-CONFIG_R8169=y
-
-# Wireless (basic support)
 CONFIG_WLAN=y
-CONFIG_CFG80211=m
-CONFIG_MAC80211=m
 
-# TUN/TAP for VPNs
-CONFIG_TUN=y
-CONFIG_TAP=y
+# Ethernet drivers =m
+CONFIG_NET_VENDOR_INTEL=y
+CONFIG_E1000=m
+CONFIG_E1000E=m
+CONFIG_NET_VENDOR_REALTEK=y
+CONFIG_R8169=m
+CONFIG_8139TOO=m
 
-# Bridge support
-CONFIG_BRIDGE=y
-CONFIG_BRIDGE_NETFILTER=y
-
-# VLAN
-CONFIG_VLAN_8021Q=y
-
-# Bonding
-CONFIG_BONDING=y
+# TUN/TAP (needed for VPNs later)
+CONFIG_TUN=m
 
 # Loopback
-CONFIG_DUMMY=y
+CONFIG_DUMMY=m
 
 # ============================================
-# Additional useful features
+# WIRELESS (=m, mkinitcpio autodetect handles this)
 # ============================================
-CONFIG_MODULES=y
-CONFIG_MODULE_UNLOAD=y
-CONFIG_SYSCTL=y
-CONFIG_KALLSYMS=y
-CONFIG_BUG=y
-CONFIG_NAMESPACES=y
-CONFIG_NET_NS=y
-CONFIG_USER_NS=y
-CONFIG_PID_NS=y
-CONFIG_CGROUPS=y
-CONFIG_BLK_DEV_INITRD=y
+CONFIG_WIRELESS=y
+CONFIG_WIRELESS_EXT=y
+CONFIG_WEXT_CORE=y
+CONFIG_WEXT_PROC=y
+CONFIG_CFG80211=m
+CONFIG_CFG80211_WEXT=m
+CONFIG_CFG80211_DEFAULT_PS=y
+CONFIG_MAC80211=m
+CONFIG_MAC80211_HAS_RC=y
+CONFIG_MAC80211_RC_MINSTREL=y
+CONFIG_MAC80211_RC_DEFAULT_MINSTREL=y
+CONFIG_MAC80211_RC_DEFAULT="minstrel_ht"
+CONFIG_RFKILL=m
+CONFIG_RFKILL_INPUT=m
 
-# Security
-CONFIG_SECURITY=y
-CONFIG_SECURITYFS=y
-CONFIG_HARDENED_USERCOPY=y
-CONFIG_STACKPROTECTOR=y
-CONFIG_STACKPROTECTOR_STRONG=y
+# WiFi drivers =m
+CONFIG_IWLWIFI=m
+CONFIG_IWLDVM=m
+CONFIG_IWLMVM=m
+CONFIG_IWLWIFI_OPMODE_MODULAR=y
+CONFIG_ATH_COMMON=m
+CONFIG_ATH9K=m
+CONFIG_ATH9K_HW=m
+CONFIG_ATH9K_COMMON=m
+CONFIG_ATH9K_PCI=m
+CONFIG_RTL8192CE=m
+CONFIG_RTL8192CU=m
+CONFIG_RTL8192C_COMMON=m
+CONFIG_RT2X00=m
+CONFIG_RT2800USB=m
+CONFIG_RT2800PCI=m
+CONFIG_B43=m
 
-# Crypto (for networking)
+# Vendor support flags (these just enable Kconfig submenus, safe to keep)
+CONFIG_WLAN_VENDOR_ATH=y
+CONFIG_WLAN_VENDOR_BROADCOM=y
+CONFIG_WLAN_VENDOR_INTEL=y
+CONFIG_WLAN_VENDOR_MEDIATEK=y
+CONFIG_WLAN_VENDOR_RALINK=y
+CONFIG_WLAN_VENDOR_REALTEK=y
+
+# ============================================
+# FIRMWARE LOADING (needed for WiFi firmware)
+# ============================================
+CONFIG_FW_LOADER=y
+CONFIG_FW_LOADER_USER_HELPER=y
+CONFIG_EXTRA_FIRMWARE=""
+
+# ============================================
+# POWER MANAGEMENT
+# ============================================
+CONFIG_PM=y
+CONFIG_PM_SLEEP=y
+
+# ============================================
+# CRYPTO (=y for core, =m for ciphers)
+# ============================================
 CONFIG_CRYPTO=y
-CONFIG_CRYPTO_AEAD=y
-CONFIG_CRYPTO_CBC=y
-CONFIG_CRYPTO_ECB=y
-CONFIG_CRYPTO_SHA256=y
-CONFIG_CRYPTO_AES=y
-CONFIG_CRYPTO_AES_NI_INTEL=y
-CONFIG_CRYPTO_CRC32C=y
-CONFIG_CRYPTO_CRC32C_INTEL=y
+CONFIG_CRYPTO_AEAD=m
+CONFIG_CRYPTO_ARC4=m
+CONFIG_CRYPTO_CBC=m
+CONFIG_CRYPTO_ECB=m
+CONFIG_CRYPTO_CMAC=m
+CONFIG_CRYPTO_HMAC=m
+CONFIG_CRYPTO_SHA1=m
+CONFIG_CRYPTO_SHA256=m
+CONFIG_CRYPTO_AES=m
+CONFIG_CRYPTO_AES_NI_INTEL=m
+CONFIG_CRYPTO_CCM=m
+CONFIG_CRYPTO_GCM=m
+CONFIG_CRYPTO_XTS=m
+CONFIG_CRYPTO_CRC32C=m
+CONFIG_CRYPTO_CRC32C_INTEL=m
 
-# Random number generation
-CONFIG_HW_RANDOM=y
-CONFIG_HW_RANDOM_VIRTIO=y
+# ============================================
+# DM / LVM (=m, optional but good to have for later)
+# ============================================
+CONFIG_BLK_DEV_DM=m
+CONFIG_DM_CRYPT=m
 
-# KVM guest support
+# ============================================
+# MMC / eMMC (laptops/tablets)
+# ============================================
+CONFIG_MMC=m
+CONFIG_MMC_SDHCI=m
+CONFIG_MMC_SDHCI_PCI=m
+
+# ============================================
+# KVM GUEST (safe on real hardware, no-op if not in VM)
+# ============================================
 CONFIG_HYPERVISOR_GUEST=y
 CONFIG_PARAVIRT=y
 CONFIG_KVM_GUEST=y
 
-# Fonts for console
-CONFIG_FONT_SUPPORT=y
-CONFIG_FONTS=y
-CONFIG_FONT_8x16=y
+# ============================================
+# RANDOM
+# ============================================
+CONFIG_HW_RANDOM=y
+
+# ============================================
+# SECURITY
+# ============================================
+CONFIG_SECURITY=y
+CONFIG_SECURITYFS=y
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_RANDOMIZE_BASE=y
+CONFIG_STACKPROTECTOR=y
+# CONFIG_STACKPROTECTOR_STRONG is not set
+
+# ============================================
+# LED (needed by some WiFi drivers)
+# ============================================
+CONFIG_LEDS_CLASS=m
+CONFIG_LEDS_TRIGGERS=m
+CONFIG_LEDS_TRIGGER_PHY=m
 EOF
         
         make olddefconfig
@@ -648,7 +591,9 @@ install_components() {
     mkdir -p "$TARGET_ROOT/boot"
     cp "$KERNEL_DIR/arch/x86/boot/bzImage" "$TARGET_ROOT/boot/vmlinuz-galactica"
     echo "$KERNEL_VERSION" > "$TARGET_ROOT/boot/.kernel-version"
-    
+    print_info "Installing kernel modules..."
+make -C "$KERNEL_DIR" modules_install INSTALL_MOD_PATH="$(realpath "$TARGET_ROOT")" 2>&1 | tail -5
+print_success "Kernel modules installed"
     cp "$POYO_DIR/poyo" "$TARGET_ROOT/sbin/poyo" && chmod 755 "$TARGET_ROOT/sbin/poyo"
     cp "$AIRRIDE_DIR/Init/build/airride" "$TARGET_ROOT/sbin/airride" && chmod 755 "$TARGET_ROOT/sbin/airride"
     ln -sf airride "$TARGET_ROOT/sbin/init"
@@ -692,7 +637,8 @@ install_essentials() {
     for binary in "$TARGET_ROOT/sbin/airride" "$TARGET_ROOT/sbin/poyo" "$TARGET_ROOT/usr/bin/airridectl" "$TARGET_ROOT/usr/bin/dreamland"; do
         copy_libs "$binary"
     done
-
+cp ginitrd/ginitrd.sh "$TARGET_ROOT/usr/sbin/ginitrd"
+chmod 755 "$TARGET_ROOT/usr/sbin/ginitrd"
     # ---- sudo / su (SUID binaries) ----
     print_info "Installing sudo and su..."
     for tool in sudo su; do
