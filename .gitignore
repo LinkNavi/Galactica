@@ -1,9 +1,13 @@
 # Build artifacts
+test-install.img
+galactica-installer.iso
 galactica-build/
 galactica-rootfs.img
 kernel-cache/
 linux-*/
 *.log
+linux-6.18.4
+kernel-cache
 test-install.img
 # Temporary files
 mnt_tmp/

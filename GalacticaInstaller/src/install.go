@@ -137,10 +137,15 @@ func fileExists(path string) bool {
 }
 
 func getUUID(device string) (string, error) {
-	cmd := exec.Command("blkid", "-s", "UUID", "-o", "value", device)
+	cmd := exec.Command("blkid", "-p", "-s", "UUID", "-o", "value", device)
 	output, err := cmd.Output()
 	if err != nil {
-		return "", err
+		// fallback without -p
+		cmd = exec.Command("blkid", "-s", "UUID", "-o", "value", device)
+		output, err = cmd.Output()
+		if err != nil {
+			return "", err
+		}
 	}
 	return strings.TrimSpace(string(output)), nil
 }
@@ -309,15 +314,15 @@ func InstallBaseSystem() error {
 		return fmt.Errorf("source directory not found: %s (build Galactica first)", getSourceDir())
 	}
 
-	cmd := exec.Command("rsync", "-aAXv",
-		"--exclude=/boot/*",
-		"--exclude=/dev/*",
-		"--exclude=/proc/*",
-		"--exclude=/sys/*",
-		"--exclude=/run/*",
-		getSourceDir()+"/",
-		MOUNT_POINT+"/",
-	)
+	cmd := exec.Command("rsync", "-aAX",
+    "--exclude=/boot/*",
+    "--exclude=/dev/*",
+    "--exclude=/proc/*",
+    "--exclude=/sys/*",
+    "--exclude=/run/*",
+    getSourceDir()+"/",
+    MOUNT_POINT+"/",
+)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to copy base system: %w (output: %s)", err, string(output))
 	}
@@ -370,25 +375,7 @@ func ConfigureSystem(hostname string) error {
 // ============================================================
 // Bootloader
 // ============================================================
-
 func InstallBootloader(device string) error {
-	rootPart := getPartitionPath(device, 3)
-
-	// Get UUID first — fail fast
-	var rootUUID string
-	for i := 0; i < 10; i++ {
-		uuid, err := getUUID(rootPart)
-		if err == nil && uuid != "" {
-			rootUUID = uuid
-			break
-		}
-		time.Sleep(1 * time.Second)
-	}
-	if rootUUID == "" {
-		return fmt.Errorf("could not get UUID for %s after 10s", rootPart)
-	}
-
-	// Install GRUB
 	if isUEFI() {
 		if err := installGRUB_UEFI(device); err != nil {
 			return err
@@ -399,16 +386,11 @@ func InstallBootloader(device string) error {
 		}
 	}
 
-	// Build initramfs via ginitrd inside the target system.
-	// writeGRUBConfig is called inside buildInitramfs so it can
-	// conditionally include initrd lines based on what was actually built.
-	if err := buildInitramfsAndWriteGRUB(rootUUID); err != nil {
-		// Non-fatal — write a basic grub.cfg without initrd lines
+	if err := buildInitramfsAndWriteGRUB(); err != nil {
 		fmt.Printf("Warning: %v\n", err)
-		fmt.Println("Warning: Writing grub.cfg without initrd. Storage drivers must be built-in (=y).")
-		return writeGRUBConfig(rootUUID, false, false)
+		fmt.Println("Warning: Writing grub.cfg without initrd.")
+		return writeGRUBConfig(false, false)
 	}
-
 	return nil
 }
 
@@ -447,13 +429,12 @@ func installGRUB_UEFI(device string) error {
 
 // buildInitramfsAndWriteGRUB runs ginitrd inside the target via chroot,
 // then writes grub.cfg reflecting what was actually built.
-func buildInitramfsAndWriteGRUB(rootUUID string) error {
+func buildInitramfsAndWriteGRUB() error {
 	ginitrdPath := filepath.Join(MOUNT_POINT, "usr", "sbin", "ginitrd")
 	if !fileExists(ginitrdPath) {
 		return fmt.Errorf("ginitrd not found at %s — copy it to the rootfs first", ginitrdPath)
 	}
 
-	// Find installed kernel version
 	modulesDir := filepath.Join(MOUNT_POINT, "lib", "modules")
 	entries, err := os.ReadDir(modulesDir)
 	if err != nil || len(entries) == 0 {
@@ -461,7 +442,6 @@ func buildInitramfsAndWriteGRUB(rootUUID string) error {
 	}
 	kernelVer := entries[len(entries)-1].Name()
 
-	// Bind-mount pseudo-filesystems so ginitrd can read /proc/modules, /sys, /dev
 	pseudos := []struct{ src, dst, fs string }{
 		{"/proc", filepath.Join(MOUNT_POINT, "proc"), "proc"},
 		{"/sys", filepath.Join(MOUNT_POINT, "sys"), "sysfs"},
@@ -471,19 +451,14 @@ func buildInitramfsAndWriteGRUB(rootUUID string) error {
 		exec.Command("mount", "--bind", p.src, p.dst).Run()
 	}
 	defer func() {
-		// Always clean up — unmount in reverse order
 		for i := len(pseudos) - 1; i >= 0; i-- {
 			exec.Command("umount", pseudos[i].dst).Run()
 		}
 	}()
 
-	// Build normal initramfs
 	normalImg := "/boot/initramfs-galactica.img"
 	cmd := exec.Command("chroot", MOUNT_POINT,
-		"/usr/sbin/ginitrd",
-		"-k", kernelVer,
-		"-o", normalImg,
-		"-c", "zstd",
+		"/usr/sbin/ginitrd", "-k", kernelVer, "-o", normalImg, "-c", "zstd",
 	)
 	normalOutput, normalErr := cmd.CombinedOutput()
 	if normalErr != nil {
@@ -491,14 +466,9 @@ func buildInitramfsAndWriteGRUB(rootUUID string) error {
 	}
 	fmt.Printf("ginitrd: %s\n", strings.TrimSpace(string(normalOutput)))
 
-	// Build fallback initramfs (includes all storage modules, non-fatal)
 	fallbackImg := "/boot/initramfs-galactica-fallback.img"
 	fallbackCmd := exec.Command("chroot", MOUNT_POINT,
-		"/usr/sbin/ginitrd",
-		"-k", kernelVer,
-		"-o", fallbackImg,
-		"-c", "zstd",
-		"-f",
+		"/usr/sbin/ginitrd", "-k", kernelVer, "-o", fallbackImg, "-c", "zstd", "-f",
 	)
 	fallbackOutput, fallbackErr := fallbackCmd.CombinedOutput()
 	if fallbackErr != nil {
@@ -508,12 +478,11 @@ func buildInitramfsAndWriteGRUB(rootUUID string) error {
 	hasNormal := fileExists(filepath.Join(MOUNT_POINT, "boot", "initramfs-galactica.img"))
 	hasFallback := fileExists(filepath.Join(MOUNT_POINT, "boot", "initramfs-galactica-fallback.img"))
 
-	return writeGRUBConfig(rootUUID, hasNormal, hasFallback)
+	return writeGRUBConfig(hasNormal, hasFallback)
 }
-
 // writeGRUBConfig writes /boot/grub/grub.cfg inside the target.
 // hasInitramfs and hasFallback control whether initrd lines are included.
-func writeGRUBConfig(rootUUID string, hasInitramfs bool, hasFallback bool) error {
+func writeGRUBConfig(hasInitramfs bool, hasFallback bool) error {
 	grubDir := filepath.Join(MOUNT_POINT, "boot", "grub")
 	if err := os.MkdirAll(grubDir, 0755); err != nil {
 		return fmt.Errorf("failed to create grub dir: %w", err)
@@ -521,44 +490,39 @@ func writeGRUBConfig(rootUUID string, hasInitramfs bool, hasFallback bool) error
 
 	var normalEntry string
 	if hasInitramfs {
-		normalEntry = fmt.Sprintf(`menuentry "Galactica Linux" {
-    linux  /vmlinuz-galactica root=UUID=%s rw quiet
+		normalEntry = `menuentry "Galactica Linux" {
+    set root=(hd0,msdos1)
+    linux  /vmlinuz-galactica root=LABEL=GalacticaRoot rw quiet console=ttyS0,115200 console=tty0
     initrd /initramfs-galactica.img
-}`, rootUUID)
+}`
 	} else {
-		normalEntry = fmt.Sprintf(`menuentry "Galactica Linux" {
-    linux  /vmlinuz-galactica root=UUID=%s rw quiet
-}`, rootUUID)
+		normalEntry = `menuentry "Galactica Linux" {
+    set root=(hd0,msdos1)
+    linux  /vmlinuz-galactica root=LABEL=GalacticaRoot rw quiet console=ttyS0,115200 console=tty0
+}`
 	}
 
 	var fallbackEntry string
 	if hasFallback {
-		fallbackEntry = fmt.Sprintf(`
+		fallbackEntry = `
 menuentry "Galactica Linux (fallback initramfs)" {
-    linux  /vmlinuz-galactica root=UUID=%s rw
+    set root=(hd0,msdos1)
+    linux  /vmlinuz-galactica root=LABEL=GalacticaRoot rw console=ttyS0,115200 console=tty0
     initrd /initramfs-galactica-fallback.img
-}`, rootUUID)
+}`
 	}
 
-	// Recovery entry — never uses initramfs, useful if initramfs itself breaks
-	recoveryEntry := fmt.Sprintf(`
+	recoveryEntry := `
 menuentry "Galactica Linux (recovery)" {
-    linux /vmlinuz-galactica root=UUID=%s rw init=/bin/sh
-}`, rootUUID)
+    set root=(hd0,msdos1)
+    linux /vmlinuz-galactica root=LABEL=GalacticaRoot rw init=/bin/sh console=ttyS0,115200 console=tty0
+}`
 
 	config := fmt.Sprintf("set timeout=5\nset default=0\n\n%s\n%s\n%s\n",
 		normalEntry, fallbackEntry, recoveryEntry)
 
-	configPath := filepath.Join(grubDir, "grub.cfg")
-	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
-		return fmt.Errorf("failed to write grub.cfg: %w", err)
-	}
-
-	fmt.Printf("grub.cfg written (initramfs=%v fallback=%v uuid=%s)\n", hasInitramfs, hasFallback, rootUUID)
-	return nil
-}
-
-// ============================================================
+	return os.WriteFile(filepath.Join(grubDir, "grub.cfg"), []byte(config), 0644)
+}// ============================================================
 // Users
 // ============================================================
 
@@ -602,12 +566,13 @@ func SetupUsers(rootPassword, username, userPassword string) error {
 		return fmt.Errorf("failed to write sudoers: %w", err)
 	}
 
-	for _, bin := range []string{"/bin/su", "/usr/bin/sudo", "/bin/mount", "/bin/umount"} {
-		path := filepath.Join(MOUNT_POINT, bin)
-		if _, err := os.Stat(path); err == nil {
-			os.Chmod(path, 0755|os.ModeSetuid)
-		}
-	}
+for _, bin := range []string{"/bin/su", "/usr/bin/sudo", "/bin/mount", "/bin/umount"} {
+    path := filepath.Join(MOUNT_POINT, bin)
+    if _, err := os.Stat(path); err == nil {
+        os.Lchown(path, 0, 0)
+        os.Chmod(path, 0o4755)
+    }
+}
 
 	return nil
 }
