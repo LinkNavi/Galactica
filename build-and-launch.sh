@@ -248,12 +248,18 @@ install_components() {
     cp "$KERNEL_DIR/arch/x86/boot/bzImage" "$TARGET_ROOT/boot/vmlinuz-galactica"
     echo "$KERNEL_VERSION" > "$TARGET_ROOT/boot/.kernel-version"
     print_success "Kernel image installed"
-
+# Install modules here, after prepare_build_dir has run
+    print_info "Installing kernel modules..."
+    cd "$KERNEL_DIR"
+    make modules_install INSTALL_MOD_PATH="../${TARGET_ROOT#./}" \
+        || { print_error "modules_install failed"; cd ..; return 1; }
+    cd ..
+    print_success "Modules installed"
     install -m755 "$POYO_DIR/poyo"                       "$TARGET_ROOT/sbin/poyo"
     install -m755 "$AIRRIDE_DIR/Init/build/airride"      "$TARGET_ROOT/sbin/airride"
     install -m755 "$AIRRIDE_DIR/Ctl/build/airridectl"    "$TARGET_ROOT/usr/bin/airridectl"
     install -m755 "$DREAMLAND_DIR/build/dreamland"       "$TARGET_ROOT/usr/bin/dreamland"
-
+install -m755 ginitrd/ginitrd.sh "$TARGET_ROOT/usr/sbin/ginitrd"
     ln -sf airride   "$TARGET_ROOT/sbin/init"
     ln -sf dreamland "$TARGET_ROOT/usr/bin/dl"
 
@@ -339,6 +345,26 @@ install_essentials() {
         fi
     done
     ln -sf ../usr/bin/su "$TARGET_ROOT/bin/su" 2>/dev/null || true
+# sudo plugins
+SUDO_PLUGIN_DIR=$(find /usr/lib/sudo /usr/lib/x86_64-linux-gnu/sudo -name "sudoers.so" 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
+if [[ -n "$SUDO_PLUGIN_DIR" ]]; then
+    mkdir -p "$TARGET_ROOT$SUDO_PLUGIN_DIR"
+    cp "$SUDO_PLUGIN_DIR"/*.so "$TARGET_ROOT$SUDO_PLUGIN_DIR/"
+    print_success "sudo plugins copied"
+else
+    print_warning "sudo plugin dir not found"
+fi
+
+# sudo conf ownership
+sudo chown root:root "$TARGET_ROOT/etc/sudo.conf" 2>/dev/null || true
+sudo chmod 644 "$TARGET_ROOT/etc/sudo.conf" 2>/dev/null || true
+sudo chown root:root "$TARGET_ROOT/etc/sudoers" 2>/dev/null || true
+
+# ldap lib needed by sudoers.so
+for lib in libldap.so.2 liblber.so.2 libsasl2.so.3; do
+    P=$(find /lib /lib64 /usr/lib /usr/lib64 -name "$lib" 2>/dev/null | head -1)
+    [[ -n "$P" ]] && { mkdir -p "$TARGET_ROOT$(dirname "$P")"; cp -L "$P" "$TARGET_ROOT$(dirname "$P")/"; }
+done
 
     # WiFi tools
     for tool in wpa_supplicant wpa_passphrase wpa_cli iw; do
@@ -452,7 +478,11 @@ EOF
 nameserver 8.8.8.8
 nameserver 8.8.4.4
 EOF
-
+mkdir -p "$TARGET_ROOT/etc/sudo.conf.d"
+cat > "$TARGET_ROOT/etc/sudo.conf" <<'EOF'
+Plugin sudoers_policy sudoers.so
+Plugin sudoers_io sudoers.so
+EOF
     cat > "$TARGET_ROOT/etc/nsswitch.conf" <<'EOF'
 passwd:   files
 group:    files

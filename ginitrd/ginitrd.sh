@@ -1,7 +1,7 @@
 #!/bin/bash
 # ginitrd - Galactica Initramfs Builder
 # Builds a minimal initramfs with only the modules needed to mount root
-set -e
+set -o pipefail
 
 VERSION="1.0.0"
 WORK_DIR=$(mktemp -d /tmp/ginitrd.XXXXXX)
@@ -66,13 +66,14 @@ while [[ $# -gt 0 ]]; do
         -m|--modules)  EXTRA_MODULES="$2"; shift 2 ;;
         -f|--fallback) FALLBACK=true;      shift   ;;
         -c|--compress) COMPRESS="$2";      shift 2 ;;
+ 	-d|--modules-dir) MODULES_DIR="$2"; shift 2 ;;
         -v|--verbose)  VERBOSE=true;       shift   ;;
         -h|--help)     usage ;;
         *) die "Unknown option: $1" ;;
     esac
 done
-
-MODULES_DIR="/lib/modules/$KERNEL_VER"
+# After arg parsing, only set default if -d wasn't provided:
+MODULES_DIR="${MODULES_DIR:-/lib/modules/$KERNEL_VER}"
 [[ -d "$MODULES_DIR" ]] || die "Kernel modules not found at $MODULES_DIR"
 
 vlog() { $VERBOSE && echo "  [v] $1" || true; }
@@ -125,11 +126,8 @@ install_busybox() {
 copy_libs() {
     local binary="$1"
     [[ ! -f "$binary" ]] && return 0
-
-    # Check if static
     file "$binary" 2>/dev/null | grep -q "statically linked" && return 0
-
-    ldd "$binary" 2>/dev/null | grep -oP '/\S+' | while read -r lib; do
+    ldd "$binary" 2>/dev/null | grep -o '/[^ ]*' | while read -r lib; do
         [[ ! -f "$lib" ]] && continue
         local dest="$WORK_DIR$lib"
         [[ -f "$dest" ]] && continue
@@ -658,8 +656,8 @@ update_grub() {
             # No fallback entry exists yet — append one
             # Get root UUID from the existing normal entry
             local uuid
-            uuid=$(grep -oP 'root=UUID=\K[^ ]+' "$grub_cfg" | head -1)
-            if [[ -n "$uuid" ]]; then
+            uuid=$(grep -o 'root=UUID=[^ ]*' "$grub_cfg" | head -1 | sed 's/root=UUID=//')
+	    if [[ -n "$uuid" ]]; then
                 cat >> "$grub_cfg" << GRUBEOF
 
 menuentry "Galactica Linux (fallback initramfs)" {

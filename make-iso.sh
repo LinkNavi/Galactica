@@ -57,7 +57,7 @@ preflight() {
 
     [[ -d "$INSTALLER_DIR" ]] && ok "Installer source found" || { err "GalacticaInstaller/ not found"; ok_flag=false; }
     [[ -d "$GALACTICA_BUILD" ]] && ok "galactica-build found" || { err "galactica-build/ not found — run build-and-launch.sh first"; ok_flag=false; }
-
+[[ -f "./ginitrd/ginitrd.sh" ]] && ok "ginitrd found" || { err "ginitrd/ginitrd.sh not found"; ok_flag=false; }
     if [[ ! -f "$KERNEL_SRC" ]]; then
         warn "Kernel not found at $KERNEL_SRC — will try to use host kernel"
         KERNEL_SRC=""
@@ -130,12 +130,30 @@ build_initrd() {
     cp "$BUSYBOX" "$ISO_INITRD/bin/busybox"
     chmod +x "$ISO_INITRD/bin/busybox"
     for cmd in sh ash ls cat echo cp mv rm mkdir mount umount sleep \
-               grep sed awk ps kill ln chmod chown ip ifconfig ping \
-               hostname uname dmesg mkswap swapon losetup dd sync udhcpc \
-               setsid chvt openvt clear reset head tail sort uniq wc find; do
+           grep sed awk ps kill ln chmod chown ip ifconfig ping \
+           hostname uname dmesg mkswap swapon losetup dd sync udhcpc \
+           setsid chvt openvt clear reset head tail sort uniq wc find \
+           cut du dirname basename tr xargs readlink realpath stat; do
         ln -sf busybox "$ISO_INITRD/bin/$cmd" 2>/dev/null || true
     done
     ok "busybox installed"
+
+    # bash (needed for ginitrd which uses bash arrays)
+    BASH=$(command -v bash)
+    if [[ -n "$BASH" ]]; then
+        cp "$BASH" "$ISO_INITRD/bin/bash"
+        copy_libs "$BASH"
+        # override busybox sh symlink with bash
+        ln -sf bash "$ISO_INITRD/bin/sh" || cp "$ISO_INITRD/bin/bash" "$ISO_INITRD/bin/sh"
+        # bash runtime libs
+        for lib in libreadline.so.8 libncursesw.so.6 libtinfo.so.6; do
+            P=$(find /lib /lib64 /usr/lib /usr/lib64 -name "$lib" 2>/dev/null | head -1)
+            [[ -n "$P" ]] && { mkdir -p "$ISO_INITRD$(dirname "$P")"; cp -L "$P" "$ISO_INITRD$(dirname "$P")/"; }
+        done
+        ok "bash installed"
+    else
+        warn "bash not found on host — ginitrd may fail"
+    fi
 
     # installer binary
     cp iso-installer-bin "$ISO_INITRD/sbin/galactica-installer"
@@ -143,44 +161,83 @@ build_initrd() {
     ok "installer binary installed"
 
     # essential tools
-   for tool in parted mkfs.ext4 mkswap swapon blkid partx rsync grub-install grub-bios-setup openssl; do
-	   TOOL_PATH=$(command -v "$tool" 2>/dev/null || true)
+    for tool in parted mkfs.ext4 mkfs.fat mkswap swapon blkid findfs partx \
+            rsync grub-install grub-bios-setup openssl zstd cpio \
+            mktemp file ldd mknod; do
+        TOOL_PATH=$(command -v "$tool" 2>/dev/null || true)
         if [[ -n "$TOOL_PATH" ]]; then
             cp "$TOOL_PATH" "$ISO_INITRD/sbin/" 2>/dev/null && ok "  tool: $tool" || warn "  could not copy $tool"
         else
             warn "  tool not found (skipping): $tool"
         fi
     done
-# grub modules for BIOS install
-GRUB_MODS_SRC=""
-for d in /usr/lib/grub/i386-pc /usr/share/grub/i386-pc; do
-    [[ -d "$d" ]] && GRUB_MODS_SRC="$d" && break
-done
-if [[ -n "$GRUB_MODS_SRC" ]]; then
-    mkdir -p "$ISO_INITRD/usr/lib/grub/i386-pc"
-    cp -r "$GRUB_MODS_SRC"/. "$ISO_INITRD/usr/lib/grub/i386-pc/"
-    ok "grub i386-pc modules copied"
+
+if [[ -f "./ginitrd/ginitrd.sh" ]]; then
+    cp "./ginitrd/ginitrd.sh" "$ISO_INITRD/sbin/ginitrd"
+    chmod +x "$ISO_INITRD/sbin/ginitrd"
+    ok "ginitrd installed from ./ginitrd/ginitrd.sh"
 else
-    warn "grub i386-pc modules not found on host — bootloader install will fail"
+    warn "ginitrd not found at ./ginitrd/ginitrd.sh"
+fi
+# ldd is usually a shell script, copy it properly
+LDD_PATH=$(command -v ldd)
+if [[ -n "$LDD_PATH" ]]; then
+    cp "$LDD_PATH" "$ISO_INITRD/sbin/ldd"
+    # ldd may reference the dynamic linker path directly — already copied above
+    ok "ldd installed"
 fi
 
-# grub modules for UEFI install
-for d in /usr/lib/grub/x86_64-efi /usr/share/grub/x86_64-efi; do
-    [[ -d "$d" ]] && {
-        mkdir -p "$ISO_INITRD/usr/lib/grub/x86_64-efi"
-        cp -r "$d"/. "$ISO_INITRD/usr/lib/grub/x86_64-efi/"
-        ok "grub x86_64-efi modules copied"
-        break
+# file needs its magic database
+FILE_PATH=$(command -v file)
+if [[ -n "$FILE_PATH" ]]; then
+    cp "$FILE_PATH" "$ISO_INITRD/sbin/file"
+    copy_libs "$FILE_PATH"
+    MAGIC=$(file --version 2>&1 | grep -oP 'magic file.*?\K/\S+' || true)
+    [[ -z "$MAGIC" ]] && MAGIC="/usr/share/misc/magic.mgc"
+    if [[ -f "$MAGIC" ]]; then
+        mkdir -p "$ISO_INITRD$(dirname "$MAGIC")"
+        cp "$MAGIC" "$ISO_INITRD$(dirname "$MAGIC")/"
+    fi
+    # Also try the magic directory
+    [[ -d "/usr/share/misc/magic" ]] && {
+        mkdir -p "$ISO_INITRD/usr/share/misc"
+        cp -r /usr/share/misc/magic "$ISO_INITRD/usr/share/misc/"
     }
-done
+    ok "file installed"
+fi
+MKTEMP=$(command -v mktemp)
+[[ -n "$MKTEMP" ]] && cp "$MKTEMP" "$ISO_INITRD/bin/mktemp"
+    # grub modules for BIOS install
+    GRUB_MODS_SRC=""
+    for d in /usr/lib/grub/i386-pc /usr/share/grub/i386-pc; do
+        [[ -d "$d" ]] && GRUB_MODS_SRC="$d" && break
+    done
+    if [[ -n "$GRUB_MODS_SRC" ]]; then
+        mkdir -p "$ISO_INITRD/usr/lib/grub/i386-pc"
+        cp -r "$GRUB_MODS_SRC"/. "$ISO_INITRD/usr/lib/grub/i386-pc/"
+        ok "grub i386-pc modules copied"
+    else
+        warn "grub i386-pc modules not found on host — bootloader install will fail"
+    fi
 
-# grub shared data files
-for d in /usr/share/grub /usr/lib/grub; do
-    [[ -d "$d" ]] && {
-        mkdir -p "$ISO_INITRD$d"
-        cp -r "$d"/. "$ISO_INITRD$d/"
-    }
-done
+    # grub modules for UEFI install
+    for d in /usr/lib/grub/x86_64-efi /usr/share/grub/x86_64-efi; do
+        [[ -d "$d" ]] && {
+            mkdir -p "$ISO_INITRD/usr/lib/grub/x86_64-efi"
+            cp -r "$d"/. "$ISO_INITRD/usr/lib/grub/x86_64-efi/"
+            ok "grub x86_64-efi modules copied"
+            break
+        }
+    done
+
+    # grub shared data files
+    for d in /usr/share/grub /usr/lib/grub; do
+        [[ -d "$d" ]] && {
+            mkdir -p "$ISO_INITRD$d"
+            cp -r "$d"/. "$ISO_INITRD$d/"
+        }
+    done
+
     # shared libraries
     info "Copying shared libraries..."
     copy_libs "$ISO_INITRD/sbin/galactica-installer"
@@ -266,6 +323,8 @@ done
     # init script
     cat > "$ISO_INITRD/init" << 'INIT_EOF'
 #!/bin/sh
+
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
 mount -t proc     proc     /proc
 mount -t sysfs    sysfs    /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true

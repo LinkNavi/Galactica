@@ -27,7 +27,25 @@ func getSourceDir() string {
 	}
 	return "/galactica-build"
 }
+var installLog *os.File
 
+func initLog() {
+	os.MkdirAll("/var/log", 0755)
+	f, err := os.OpenFile("/var/log/galactica-install.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		fmt.Println("Warning: could not open log file:", err)
+		return
+	}
+	installLog = f
+}
+
+func logf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	fmt.Print(msg)
+	if installLog != nil {
+		installLog.WriteString(msg)
+	}
+}
 // ============================================================
 // Tea messages
 // ============================================================
@@ -47,6 +65,7 @@ var installationRunning bool = false
 // ============================================================
 
 func (m Model) doInstall() tea.Cmd {
+initLog()
 	currentInstallStep = 0
 	installationRunning = true
 	installError = nil
@@ -93,6 +112,7 @@ func (m Model) doInstall() tea.Cmd {
 			{"Finalizing installation", func(_, _, _, _, _ string) error {
 				return FinalizeInstallation()
 			}},
+
 		}
 
 		for i, step := range steps {
@@ -106,8 +126,11 @@ func (m Model) doInstall() tea.Cmd {
 
 		currentInstallStep = len(steps)
 		installationRunning = false
+ exec.Command("cp", "/var/log/galactica-install.log",
+        filepath.Join(MOUNT_POINT, "var", "log", "galactica-install.log")).Run()
 	}()
-
+exec.Command("cp", "/var/log/galactica-install.log",
+    filepath.Join(MOUNT_POINT, "var", "log", "galactica-install.log")).Run()
 	return installProgressTicker()
 }
 
@@ -369,6 +392,47 @@ func ConfigureSystem(hostname string) error {
 		return fmt.Errorf("failed to write resolv.conf: %w", err)
 	}
 
+	// Pre-create udhcpc script so network-setup works on first boot
+	udhcpcDir := filepath.Join(MOUNT_POINT, "usr", "share", "udhcpc")
+	if err := os.MkdirAll(udhcpcDir, 0755); err != nil {
+		return fmt.Errorf("failed to create udhcpc dir: %w", err)
+	}
+	udhcpcScript := `#!/bin/sh
+case "$1" in
+    deconfig)
+        ip addr flush dev "$interface" 2>/dev/null
+        ip link set "$interface" up
+        ;;
+    bound|renew)
+        ip addr flush dev "$interface" 2>/dev/null
+        mask2prefix() {
+            local mask="$1" bits=0 IFS=.
+            for octet in $mask; do
+                case "$octet" in
+                    255) bits=$((bits+8));; 254) bits=$((bits+7));;
+                    252) bits=$((bits+6));; 248) bits=$((bits+5));;
+                    240) bits=$((bits+4));; 224) bits=$((bits+3));;
+                    192) bits=$((bits+2));; 128) bits=$((bits+1));;
+                esac
+            done
+            echo $bits
+        }
+        PREFIX=$(mask2prefix "${subnet:-255.255.255.0}")
+        ip addr add "$ip/$PREFIX" dev "$interface"
+        [ -n "$router" ] && {
+            while ip route del default 2>/dev/null; do :; done
+            for gw in $router; do ip route add default via "$gw" dev "$interface" && break; done
+        }
+        { echo "# DHCP $(date)"; for ns in $dns 8.8.8.8 8.8.4.4; do echo "nameserver $ns"; done; } > /etc/resolv.conf
+        ;;
+esac
+exit 0
+`
+	scriptPath := filepath.Join(udhcpcDir, "default.script")
+	if err := os.WriteFile(scriptPath, []byte(udhcpcScript), 0755); err != nil {
+		return fmt.Errorf("failed to write udhcpc script: %w", err)
+	}
+
 	return nil
 }
 
@@ -376,6 +440,9 @@ func ConfigureSystem(hostname string) error {
 // Bootloader
 // ============================================================
 func InstallBootloader(device string) error {
+	rootPart := getPartitionPath(device, 3)
+	bootPart := getPartitionPath(device, 1)
+
 	if isUEFI() {
 		if err := installGRUB_UEFI(device); err != nil {
 			return err
@@ -386,10 +453,11 @@ func InstallBootloader(device string) error {
 		}
 	}
 
-	if err := buildInitramfsAndWriteGRUB(); err != nil {
-		fmt.Printf("Warning: %v\n", err)
-		fmt.Println("Warning: Writing grub.cfg without initrd.")
-		return writeGRUBConfig(false, false)
+	if err := buildInitramfsAndWriteGRUB(rootPart, bootPart); err != nil {
+		logf("WARNING: initramfs build failed: %v\n", err)
+		logf("DEBUG: rootPart=%s bootPart=%s\n", rootPart, bootPart)
+		fmt.Println("Falling back to device path (no initramfs)...")
+		return writeGRUBConfig(false, false, rootPart, bootPart)
 	}
 	return nil
 }
@@ -421,7 +489,7 @@ func installGRUB_UEFI(device string) error {
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// UEFI install failed — fall back to BIOS
-		fmt.Printf("UEFI grub-install failed, falling back to BIOS: %s\n", string(output))
+		logf("UEFI grub-install failed, falling back to BIOS: %s\n", string(output))
 		return installGRUB_BIOS(device)
 	}
 	return nil
@@ -429,100 +497,109 @@ func installGRUB_UEFI(device string) error {
 
 // buildInitramfsAndWriteGRUB runs ginitrd inside the target via chroot,
 // then writes grub.cfg reflecting what was actually built.
-func buildInitramfsAndWriteGRUB() error {
-	ginitrdPath := filepath.Join(MOUNT_POINT, "usr", "sbin", "ginitrd")
-	if !fileExists(ginitrdPath) {
-		return fmt.Errorf("ginitrd not found at %s — copy it to the rootfs first", ginitrdPath)
+func buildInitramfsAndWriteGRUB(rootPart, bootPart string) error {
+	ginitrdPath, err := exec.LookPath("ginitrd")
+	if err != nil {
+		logf("DEBUG: ginitrd not on PATH: %v\n", err)
+		ginitrdPath = filepath.Join(MOUNT_POINT, "usr", "sbin", "ginitrd")
+		if !fileExists(ginitrdPath) {
+			return fmt.Errorf("ginitrd not found on PATH or at %s", ginitrdPath)
+		}
+		logf("DEBUG: using ginitrd from rootfs: %s\n", ginitrdPath)
+	} else {
+		logf("DEBUG: found ginitrd at %s\n", ginitrdPath)
 	}
 
 	modulesDir := filepath.Join(MOUNT_POINT, "lib", "modules")
 	entries, err := os.ReadDir(modulesDir)
 	if err != nil || len(entries) == 0 {
-		return fmt.Errorf("no kernel modules found in %s", modulesDir)
+		return fmt.Errorf("no kernel modules found in %s: %v", modulesDir, err)
 	}
 	kernelVer := entries[len(entries)-1].Name()
+	logf("DEBUG: kernelVer=%s\n", kernelVer)
 
-	pseudos := []struct{ src, dst, fs string }{
-		{"/proc", filepath.Join(MOUNT_POINT, "proc"), "proc"},
-		{"/sys", filepath.Join(MOUNT_POINT, "sys"), "sysfs"},
-		{"/dev", filepath.Join(MOUNT_POINT, "dev"), "devtmpfs"},
-	}
-	for _, p := range pseudos {
-		exec.Command("mount", "--bind", p.src, p.dst).Run()
-	}
-	defer func() {
-		for i := len(pseudos) - 1; i >= 0; i-- {
-			exec.Command("umount", pseudos[i].dst).Run()
-		}
-	}()
-
-	normalImg := "/boot/initramfs-galactica.img"
-	cmd := exec.Command("chroot", MOUNT_POINT,
-		"/usr/sbin/ginitrd", "-k", kernelVer, "-o", normalImg, "-c", "zstd",
+	normalImg := filepath.Join(MOUNT_POINT, "boot", "initramfs-galactica.img")
+	cmd := exec.Command(ginitrdPath,
+		"-k", kernelVer,
+		"-d", filepath.Join(MOUNT_POINT, "lib", "modules", kernelVer),
+		"-o", normalImg,
+		"-c", "zstd",
 	)
-	normalOutput, normalErr := cmd.CombinedOutput()
-	if normalErr != nil {
-		return fmt.Errorf("ginitrd (normal) failed: %w\noutput: %s", normalErr, string(normalOutput))
-	}
-	fmt.Printf("ginitrd: %s\n", strings.TrimSpace(string(normalOutput)))
-
-	fallbackImg := "/boot/initramfs-galactica-fallback.img"
-	fallbackCmd := exec.Command("chroot", MOUNT_POINT,
-		"/usr/sbin/ginitrd", "-k", kernelVer, "-o", fallbackImg, "-c", "zstd", "-f",
-	)
-	fallbackOutput, fallbackErr := fallbackCmd.CombinedOutput()
-	if fallbackErr != nil {
-		fmt.Printf("Warning: ginitrd fallback failed (non-fatal): %v\n%s\n", fallbackErr, string(fallbackOutput))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ginitrd failed: %w\noutput: %s", err, string(output))
 	}
 
-	hasNormal := fileExists(filepath.Join(MOUNT_POINT, "boot", "initramfs-galactica.img"))
-	hasFallback := fileExists(filepath.Join(MOUNT_POINT, "boot", "initramfs-galactica-fallback.img"))
+	fallbackImg := filepath.Join(MOUNT_POINT, "boot", "initramfs-galactica-fallback.img")
+	exec.Command(ginitrdPath,
+		"-k", kernelVer,
+		"-d", filepath.Join(MOUNT_POINT, "lib", "modules", kernelVer),
+		"-o", fallbackImg,
+		"-c", "zstd",
+		"-f",
+	).CombinedOutput()
 
-	return writeGRUBConfig(hasNormal, hasFallback)
-}
-// writeGRUBConfig writes /boot/grub/grub.cfg inside the target.
+	hasNormal := fileExists(normalImg)
+	hasFallback := fileExists(fallbackImg)
+	return writeGRUBConfig(hasNormal, hasFallback, rootPart, bootPart)
+}// writeGRUBConfig writes /boot/grub/grub.cfg inside the target.
 // hasInitramfs and hasFallback control whether initrd lines are included.
-func writeGRUBConfig(hasInitramfs bool, hasFallback bool) error {
-	grubDir := filepath.Join(MOUNT_POINT, "boot", "grub")
+func writeGRUBConfig(hasInitramfs bool, hasFallback bool, rootPart string, bootPart string) error {
+grubDir := filepath.Join(MOUNT_POINT, "boot", "grub")
 	if err := os.MkdirAll(grubDir, 0755); err != nil {
 		return fmt.Errorf("failed to create grub dir: %w", err)
 	}
 
-	var normalEntry string
+	var rootArg string
 	if hasInitramfs {
-		normalEntry = `menuentry "Galactica Linux" {
-    set root=(hd0,msdos1)
-    linux  /vmlinuz-galactica root=LABEL=GalacticaRoot rw quiet console=ttyS0,115200 console=tty0
-    initrd /initramfs-galactica.img
-}`
+		// initramfs can resolve UUID via blkid/findfs
+		rootUUID, err := getUUID(rootPart)
+		if err == nil && rootUUID != "" {
+			rootArg = "UUID=" + rootUUID
+		} else {
+			rootArg = rootPart
+		}
 	} else {
-		normalEntry = `menuentry "Galactica Linux" {
-    set root=(hd0,msdos1)
-    linux  /vmlinuz-galactica root=LABEL=GalacticaRoot rw quiet console=ttyS0,115200 console=tty0
-}`
+		// no initramfs — kernel needs a direct device path
+		rootArg = rootPart
 	}
 
-	var fallbackEntry string
+	bootLabel := "GalacticaBoot"
+	if isUEFI() {
+		bootLabel = "GalacticaRoot"
+	}
+
+	kernelArgs := fmt.Sprintf("root=%s rootwait rw quiet console=ttyS0,115200 console=tty0", rootArg)
+
+	normalEntry := fmt.Sprintf(`menuentry "Galactica Linux" {
+    search --no-floppy --label --set=root %s
+    linux  /vmlinuz-galactica %s`, bootLabel, kernelArgs)
+	if hasInitramfs {
+		normalEntry += "\n    initrd /initramfs-galactica.img"
+	}
+	normalEntry += "\n}"
+
+	fallbackEntry := ""
 	if hasFallback {
-		fallbackEntry = `
-menuentry "Galactica Linux (fallback initramfs)" {
-    set root=(hd0,msdos1)
-    linux  /vmlinuz-galactica root=LABEL=GalacticaRoot rw console=ttyS0,115200 console=tty0
+		fallbackEntry = fmt.Sprintf(`
+menuentry "Galactica Linux (fallback)" {
+    search --no-floppy --label --set=root %s
+    linux  /vmlinuz-galactica %s
     initrd /initramfs-galactica-fallback.img
-}`
+}`, bootLabel, kernelArgs)
 	}
 
-	recoveryEntry := `
+	recoveryEntry := fmt.Sprintf(`
 menuentry "Galactica Linux (recovery)" {
-    set root=(hd0,msdos1)
-    linux /vmlinuz-galactica root=LABEL=GalacticaRoot rw init=/bin/sh console=ttyS0,115200 console=tty0
-}`
+    search --no-floppy --label --set=root %s
+    linux /vmlinuz-galactica root=%s rootwait rw init=/bin/sh console=ttyS0,115200 console=tty0
+}`, bootLabel, rootArg)
 
 	config := fmt.Sprintf("set timeout=5\nset default=0\n\n%s\n%s\n%s\n",
 		normalEntry, fallbackEntry, recoveryEntry)
 
 	return os.WriteFile(filepath.Join(grubDir, "grub.cfg"), []byte(config), 0644)
-}// ============================================================
+}
+// ============================================================
 // Users
 // ============================================================
 
