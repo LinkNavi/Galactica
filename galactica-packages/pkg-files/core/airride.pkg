@@ -1,0 +1,11 @@
+[Package]
+name = "airride"
+version = "1.0.0"
+description = "AirRide init system"
+url = "https://github.com/LinkNavi/Galactica/releases/download/airride-1.0.0/airride-1.0.0.tar.gz"
+category = "core"
+
+[Script]
+install -Dm755 airride /sbin/airride
+install -Dm755 airridectl /usr/bin/airridectl
+ln -sf airride /sbin/init

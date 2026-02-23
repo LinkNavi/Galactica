@@ -1,0 +1,29 @@
+name: Release Base Config
+
+on:
+  push:
+    tags:
+      - 'base-config-*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release'
+        default: '1.0.0'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package
+        run: bash package-release.sh --config-only
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name || format('base-config-{0}', inputs.version) }}
+          name: Base Config ${{ inputs.version || github.ref_name }}
+          files: galactica-packages/tarballs/base-config-*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

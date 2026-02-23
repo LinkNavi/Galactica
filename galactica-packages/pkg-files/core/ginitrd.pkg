@@ -1,0 +1,9 @@
+[Package]
+name = "ginitrd"
+version = "1.0.0"
+description = "Galactica initramfs generator"
+url = "https://github.com/LinkNavi/Galactica/releases/download/ginitrd-1.0.0/ginitrd-1.0.0.tar.gz"
+category = "core"
+
+[Script]
+install -Dm755 ginitrd.sh /usr/sbin/ginitrd

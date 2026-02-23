@@ -1,0 +1,12 @@
+[Package]
+name = "busybox"
+version = "1.35.0"
+description = "BusyBox userland utilities"
+url = "https://github.com/LinkNavi/Galactica/releases/download/busybox-1.35.0/busybox-1.35.0.tar.gz"
+category = "core"
+
+[Script]
+install -Dm755 busybox /bin/busybox
+for cmd in sh ash ls cat echo pwd mkdir rm cp mv tar udhcpc gunzip gzip            ln chmod chown grep sed awk ps kill sleep touch date mount            umount ip ifconfig route ping hostname uname dmesg; do
+    ln -sf busybox /bin/$cmd 2>/dev/null || true
+done

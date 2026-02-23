@@ -1,0 +1,43 @@
+name: Release Dreamland
+
+on:
+  push:
+    tags:
+      - 'dreamland-*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release'
+        default: '1.0.0'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: sudo apt-get install -y g++ libcurl4-openssl-dev libssl-dev libarchive-dev libzstd-dev zlib1g-dev
+
+      - name: Build Dreamland
+        run: |
+          cd Dreamland
+          mkdir -p build
+          g++ -o build/dreamland src/main.cpp \
+              -std=c++20 -O2 -Wall -Wextra -fPIC \
+              -lcurl -lssl -lcrypto -lz -lzstd -larchive -lpthread -ldl
+
+      - name: Package
+        run: |
+          mkdir release
+          cp Dreamland/build/dreamland release/
+          tar -czf dreamland-${{ github.ref_name || inputs.version }}.tar.gz -C release .
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name || format('dreamland-{0}', inputs.version) }}
+          name: Dreamland ${{ inputs.version || github.ref_name }}
+          files: dreamland-*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,45 @@
+name: Release AirRide
+
+on:
+  push:
+    tags:
+      - 'airride-*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release'
+        default: '1.0.0'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: sudo apt-get install -y g++ make
+
+      - name: Build AirRide
+        run: |
+          cd AirRide/Init
+          mkdir -p build
+          g++ -o build/airride src/main.cpp -Wall -Wextra -O2 -std=c++17 -fstack-protector-strong
+          cd ../Ctl
+          mkdir -p build
+          g++ -o build/airridectl src/main.cpp -Wall -Wextra -O2 -std=c++17
+
+      - name: Package
+        run: |
+          mkdir release
+          cp AirRide/Init/build/airride release/
+          cp AirRide/Ctl/build/airridectl release/
+          tar -czf airride-${{ github.ref_name || inputs.version }}.tar.gz -C release .
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name || format('airride-{0}', inputs.version) }}
+          name: AirRide ${{ inputs.version || github.ref_name }}
+          files: airride-*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

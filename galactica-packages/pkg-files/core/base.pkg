@@ -1,0 +1,8 @@
+[Package]
+name = "base"
+version = "1.0.0"
+description = "Galactica base system metapackage"
+category = "core"
+
+[Dependencies]
+depends = "busybox airride poyo dreamland ginitrd base-config"

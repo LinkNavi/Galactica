@@ -11,8 +11,10 @@ PINK='\033[38;5;213m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+USE_FETCH=false
 TARGET_ROOT="./galactica-build"
 KERNEL_DIR=""
+KERNELS_DIR="$HOME/kernels/galactica"
 AIRRIDE_DIR="./AirRide"
 DREAMLAND_DIR="./Dreamland"
 POYO_DIR="./Poyo"
@@ -76,84 +78,55 @@ preflight_checks() {
 build_kernel() {
     print_step 1 10 "Build Linux Kernel"
 
+    if [[ "$USE_FETCH" == "true" ]]; then
+        print_info "Fetch mode — skipping kernel build"
+        KERNEL_DIR=""
+        return 0
+    fi
+
     local TARBALL KURL KDIR CACHE_DIR GCC_VER rebuild
     TARBALL="linux-${KERNEL_VERSION}.tar.xz"
     KURL="https://cdn.kernel.org/pub/linux/kernel/v6.x/${TARBALL}"
     KDIR="./linux-${KERNEL_VERSION}"
     CACHE_DIR="./kernel-cache"
-
-    # Set global so later steps can find the source tree
     KERNEL_DIR="$KDIR"
 
-    # Skip if already built
     if [[ -f "$TARGET_ROOT/boot/vmlinuz-galactica" ]] && \
-       [[ -f "$TARGET_ROOT/boot/.kernel-version" ]] && \
-       [[ "$(cat "$TARGET_ROOT/boot/.kernel-version")" == "$KERNEL_VERSION" ]]; then
+       [[ "$(cat "$TARGET_ROOT/boot/.kernel-version" 2>/dev/null)" == "$KERNEL_VERSION" ]]; then
         print_success "Kernel $KERNEL_VERSION already built"
         read -rp "Rebuild? (y/n) [n]: " rebuild
         [[ "$rebuild" != "y" ]] && return 0
     fi
 
     mkdir -p "$CACHE_DIR"
-
-    # Download tarball if not cached
     if [[ ! -f "$CACHE_DIR/$TARBALL" ]]; then
         print_info "Downloading kernel $KERNEL_VERSION ..."
         wget -O "$CACHE_DIR/$TARBALL" "$KURL" \
             || curl -L -o "$CACHE_DIR/$TARBALL" "$KURL" \
             || { print_error "Download failed"; return 1; }
     fi
-
-    # Extract if source dir missing
     if [[ ! -d "$KDIR" ]]; then
         print_info "Extracting kernel source..."
-        tar -xf "$CACHE_DIR/$TARBALL" \
-            || { print_error "Extraction failed"; return 1; }
+        tar -xf "$CACHE_DIR/$TARBALL" || { print_error "Extraction failed"; return 1; }
     fi
 
     cd "$KDIR"
-
-    # GCC 13+ needs gnu11
     GCC_VER=$(gcc -dumpversion | cut -d. -f1)
     if [[ $GCC_VER -ge 13 ]]; then
         export KCFLAGS="-std=gnu11" HOSTCFLAGS="-std=gnu11" \
                CC="gcc -std=gnu11" HOSTCC="gcc -std=gnu11"
     fi
-
-    # Load external config if no .config yet
     if [[ ! -f .config ]]; then
-        if [[ -f "../kernel.config" ]]; then
-            print_info "Using ../kernel.config"
-            cp ../kernel.config .config
-            make olddefconfig
-        else
-            print_error "No .config found and no ../kernel.config provided."
-            print_error "Place your kernel config as kernel.config next to this script."
-            cd ..
-            return 1
-        fi
+        [[ -f "../kernel.config" ]] || { print_error "No kernel.config found"; cd ..; return 1; }
+        cp ../kernel.config .config
+        make olddefconfig
     fi
-
-    # Sanity-check critical options
     for opt in CONFIG_VIRTIO_BLK CONFIG_VIRTIO_NET CONFIG_INET CONFIG_EXT4_FS; do
-        grep -q "^${opt}=y" .config \
-            || { print_error "$opt is NOT enabled in .config"; cd ..; return 1; }
+        grep -q "^${opt}=y" .config || { print_error "$opt not enabled"; cd ..; return 1; }
     done
     print_success "Kernel config validated"
-
-    if [[ ! -f arch/x86/boot/bzImage ]]; then
-        print_info "Compiling kernel (this takes a while) ..."
-        make -j"$(nproc)" 2>&1 | tee ../kernel-build.log
-    fi
-
-    if [[ -f arch/x86/boot/bzImage ]]; then
-        print_success "Kernel built successfully"
-    else
-        print_error "Kernel build failed — see kernel-build.log"
-        cd ..
-        return 1
-    fi
-
+    [[ ! -f arch/x86/boot/bzImage ]] && make -j"$(nproc)" 2>&1 | tee ../kernel-build.log
+    [[ -f arch/x86/boot/bzImage ]] && print_success "Kernel built" || { print_error "Build failed"; cd ..; return 1; }
     cd ..
 }
 
@@ -202,15 +175,83 @@ build_airridectl() {
 # ---------------------------------------------------------------------------
 build_dreamland() {
     print_step 5 10 "Build Dreamland Package Manager"
+
+    local CURL_VER="8.5.0"
+    local CURL_TAR="../curl-cache/curl-${CURL_VER}.tar.gz"
+    local CURL_SRC="../curl-${CURL_VER}"
+    local CURL_LIB="/usr/local/lib/libcurl.a"
+
+    # Ask to rebuild if already built
+    if [[ -f "$CURL_LIB" ]]; then
+        read -p "[?] Static curl already built. Rebuild? (y/N): " rebuild
+        if [[ "${rebuild,,}" == "y" ]]; then
+            sudo rm -f "$CURL_LIB"
+            rm -rf "$CURL_SRC"
+        fi
+    fi
+
+    if [[ ! -f "$CURL_LIB" ]]; then
+        print_info "Building static curl $CURL_VER from source..."
+        mkdir -p "../curl-cache"
+
+        if [[ ! -f "$CURL_TAR" ]]; then
+            print_info "Downloading curl $CURL_VER..."
+            wget -q --show-progress -O "$CURL_TAR" \
+                "https://curl.se/download/curl-${CURL_VER}.tar.gz" \
+            || curl -L --progress-bar -o "$CURL_TAR" \
+                "https://curl.se/download/curl-${CURL_VER}.tar.gz" \
+            || { print_error "Failed to download curl source"; return 1; }
+        fi
+
+        [[ -d "$CURL_SRC" ]] && rm -rf "$CURL_SRC"
+        tar -xzf "$CURL_TAR" -C ".." \
+            || { print_error "Failed to extract curl"; return 1; }
+
+        cd "$CURL_SRC"
+        ./configure \
+            --disable-shared --enable-static \
+            --disable-ldap --disable-ldaps \
+            --disable-rtsp --disable-dict --disable-telnet \
+            --disable-tftp --disable-pop3 --disable-imap \
+            --disable-smtp --disable-gopher --disable-smb \
+            --disable-ftp --disable-sftp \
+            --without-libssh2 --without-gssapi \
+            --without-brotli --without-libpsl \
+            --without-nghttp2 --without-libidn2 \
+            --without-rtmp --without-librtmp \
+            --with-openssl \
+            --silent \
+            || { print_error "curl configure failed"; cd ../"$DREAMLAND_DIR"; return 1; }
+
+        make -j"$(nproc)" --silent \
+            || { print_error "curl make failed"; cd ../"$DREAMLAND_DIR"; return 1; }
+
+        sudo make install --silent \
+            || { print_error "curl install failed"; cd ../"$DREAMLAND_DIR"; return 1; }
+
+        cd ../
+        print_success "Static curl built"
+    else
+        print_info "Using existing static curl"
+    fi
+
+    print_info "Building Dreamland..."
     cd "$DREAMLAND_DIR"
-    pkg-config --exists libcurl libarchive 2>/dev/null \
-        || print_warning "Some libraries may be missing — attempting build anyway"
     mkdir -p build
+
     g++ -o build/dreamland src/main.cpp \
-        -std=c++17 -O2 -Wall -Wextra -fPIC \
-        -lcurl -lssl -lcrypto -lz -lzstd -larchive -lpthread -ldl \
+        -std=c++20 -O2 -fPIC \
+        -static \
+        -I/usr/local/include \
+        -L/usr/local/lib \
+        -lcurl -lssl -lcrypto \
+        -larchive -lz -lzstd -lbz2 -llzma -llz4 \
+        -lacl -lnettle -lhogweed -lgmp \
+        -lpthread -ldl -lm \
         || { print_error "Dreamland build failed"; cd ..; return 1; }
-    print_success "Dreamland built"
+
+    strip --strip-unneeded build/dreamland
+    print_success "Dreamland built ($(du -sh build/dreamland | cut -f1), static)"
     cd ..
 }
 
@@ -242,27 +283,44 @@ prepare_build_dir() {
 install_components() {
     print_step 7 10 "Install Built Components"
 
-    [[ -z "$KERNEL_DIR" ]] && KERNEL_DIR=$(find . -maxdepth 1 -type d -name "linux-*" | head -1)
-
     mkdir -p "$TARGET_ROOT/boot"
-    cp "$KERNEL_DIR/arch/x86/boot/bzImage" "$TARGET_ROOT/boot/vmlinuz-galactica"
-    echo "$KERNEL_VERSION" > "$TARGET_ROOT/boot/.kernel-version"
-    print_success "Kernel image installed"
-# Install modules here, after prepare_build_dir has run
-    print_info "Installing kernel modules..."
-    cd "$KERNEL_DIR"
-    make modules_install INSTALL_MOD_PATH="../${TARGET_ROOT#./}" \
-        || { print_error "modules_install failed"; cd ..; return 1; }
-    cd ..
-    print_success "Modules installed"
-    install -m755 "$POYO_DIR/poyo"                       "$TARGET_ROOT/sbin/poyo"
-    install -m755 "$AIRRIDE_DIR/Init/build/airride"      "$TARGET_ROOT/sbin/airride"
-    install -m755 "$AIRRIDE_DIR/Ctl/build/airridectl"    "$TARGET_ROOT/usr/bin/airridectl"
-    install -m755 "$DREAMLAND_DIR/build/dreamland"       "$TARGET_ROOT/usr/bin/dreamland"
-install -m755 ginitrd/ginitrd.sh "$TARGET_ROOT/usr/sbin/ginitrd"
+
+    if [[ "$USE_FETCH" == "true" ]]; then
+	./fetch.sh || { print_error "fetch.sh failed"; return 1; }
+        print_info "Installing kernel from $KERNELS_DIR..."
+        [[ -f "$KERNELS_DIR/boot/vmlinuz-galactica" ]] \
+            || { print_error "Kernel not found — run ./fetch-kernel.sh first"; return 1; }
+        cp "$KERNELS_DIR/boot/vmlinuz-galactica" "$TARGET_ROOT/boot/vmlinuz-galactica"
+        echo "$KERNEL_VERSION" > "$TARGET_ROOT/boot/.kernel-version"
+        print_success "Kernel installed from fetch"
+
+        print_info "Installing modules from $KERNELS_DIR..."
+        [[ -d "$KERNELS_DIR/lib/modules/$KERNEL_VERSION" ]] \
+            || { print_error "Modules not found — run ./fetch-kernel.sh first"; return 1; }
+        mkdir -p "$TARGET_ROOT/lib/modules"
+        cp -a "$KERNELS_DIR/lib/modules/$KERNEL_VERSION" "$TARGET_ROOT/lib/modules/"
+        print_success "Modules installed from fetch"
+    else
+        [[ -z "$KERNEL_DIR" ]] && KERNEL_DIR=$(find . -maxdepth 1 -type d -name "linux-*" | head -1)
+        cp "$KERNEL_DIR/arch/x86/boot/bzImage" "$TARGET_ROOT/boot/vmlinuz-galactica"
+        echo "$KERNEL_VERSION" > "$TARGET_ROOT/boot/.kernel-version"
+        print_success "Kernel image installed"
+
+        print_info "Installing kernel modules..."
+        cd "$KERNEL_DIR"
+        make modules_install INSTALL_MOD_PATH="../${TARGET_ROOT#./}" \
+            || { print_error "modules_install failed"; cd ..; return 1; }
+        cd ..
+        print_success "Modules installed"
+    fi
+
+    install -m755 "$POYO_DIR/poyo"                    "$TARGET_ROOT/sbin/poyo"
+    install -m755 "$AIRRIDE_DIR/Init/build/airride"   "$TARGET_ROOT/sbin/airride"
+    install -m755 "$AIRRIDE_DIR/Ctl/build/airridectl"  "$TARGET_ROOT/usr/bin/airridectl"
+    install -m755 "$DREAMLAND_DIR/build/dreamland"    "$TARGET_ROOT/usr/bin/dreamland"
+    install -m755 ginitrd/ginitrd.sh                  "$TARGET_ROOT/usr/sbin/ginitrd"
     ln -sf airride   "$TARGET_ROOT/sbin/init"
     ln -sf dreamland "$TARGET_ROOT/usr/bin/dl"
-
     print_success "Components installed"
 }
 
@@ -290,7 +348,7 @@ install_essentials() {
     chmod +x "$TARGET_ROOT/bin/busybox"
 
     # Busybox symlinks — /bin
-    for cmd in sh ash ls cat echo pwd mkdir rm cp mv ln chmod chown \
+    for cmd in sh ash ls cat echo pwd mkdir rm cp mv tar udhcpc ln chmod chown \
                 grep sed awk ps kill sleep touch date mount umount \
                 ip ifconfig route ping hostname uname dmesg; do
         ln -sf busybox "$TARGET_ROOT/bin/$cmd" 2>/dev/null || true
@@ -310,7 +368,7 @@ install_essentials() {
                "$TARGET_ROOT/usr/bin/dreamland"; do
         copy_libs "$bin"
     done
-
+ln -sf busybox "$TARGET_ROOT/bin/tar" 2>/dev/null || true
     # Core libs by name (fallback)
     for lib in libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 \
                libcrypt.so.1 libgcc_s.so.1 libstdc++.so.6 \
@@ -346,19 +404,23 @@ install_essentials() {
     done
     ln -sf ../usr/bin/su "$TARGET_ROOT/bin/su" 2>/dev/null || true
 # sudo plugins
-SUDO_PLUGIN_DIR=$(find /usr/lib/sudo /usr/lib/x86_64-linux-gnu/sudo -name "sudoers.so" 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
+SUDO_PLUGIN_DIR=$(find /usr/lib/sudo /usr/lib/x86_64-linux-gnu/sudo /usr/libexec/sudo -name "sudoers.so" 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
+
 if [[ -n "$SUDO_PLUGIN_DIR" ]]; then
     mkdir -p "$TARGET_ROOT$SUDO_PLUGIN_DIR"
     cp "$SUDO_PLUGIN_DIR"/*.so "$TARGET_ROOT$SUDO_PLUGIN_DIR/"
     print_success "sudo plugins copied"
+    
+    # Write sudo.conf with correct path
+    PLUGIN_RELATIVE="${SUDO_PLUGIN_DIR}/sudoers.so"
+    cat > "$TARGET_ROOT/etc/sudo.conf" <<EOF
+Plugin sudoers_policy ${PLUGIN_RELATIVE}
+EOF
+
 else
     print_warning "sudo plugin dir not found"
 fi
 
-# sudo conf ownership
-sudo chown root:root "$TARGET_ROOT/etc/sudo.conf" 2>/dev/null || true
-sudo chmod 644 "$TARGET_ROOT/etc/sudo.conf" 2>/dev/null || true
-sudo chown root:root "$TARGET_ROOT/etc/sudoers" 2>/dev/null || true
 
 # ldap lib needed by sudoers.so
 for lib in libldap.so.2 liblber.so.2 libsasl2.so.3; do
@@ -399,9 +461,11 @@ done
 
     # Strip binaries
     print_info "Stripping binaries..."
-    find "$TARGET_ROOT/usr/bin" "$TARGET_ROOT/sbin" "$TARGET_ROOT/bin" \
-         -type f -executable \
-         -exec strip --strip-unneeded {} 2>/dev/null \;
+    
+find "$TARGET_ROOT/usr/bin" "$TARGET_ROOT/sbin" "$TARGET_ROOT/bin" \
+     -type f -executable \
+     ! -name "sudo" ! -name "su" \
+     -exec strip --strip-unneeded {} 2>/dev/null \;
     find "$TARGET_ROOT/lib" "$TARGET_ROOT/usr/lib" \
          -name '*.so*' -type f \
          -exec strip --strip-unneeded {} 2>/dev/null \;
@@ -478,11 +542,7 @@ EOF
 nameserver 8.8.8.8
 nameserver 8.8.4.4
 EOF
-mkdir -p "$TARGET_ROOT/etc/sudo.conf.d"
-cat > "$TARGET_ROOT/etc/sudo.conf" <<'EOF'
-Plugin sudoers_policy sudoers.so
-Plugin sudoers_io sudoers.so
-EOF
+
     cat > "$TARGET_ROOT/etc/nsswitch.conf" <<'EOF'
 passwd:   files
 group:    files
@@ -764,6 +824,14 @@ foreground=true
 after=network
 EOF
 
+sudo chown root:root "$TARGET_ROOT/etc/sudoers"
+sudo chmod 440       "$TARGET_ROOT/etc/sudoers"
+sudo chown root:root "$TARGET_ROOT/etc/sudo.conf" 2>/dev/null || true
+sudo chmod 644       "$TARGET_ROOT/etc/sudo.conf" 2>/dev/null || true
+sudo chown root:root "$TARGET_ROOT/usr/bin/sudo"  2>/dev/null || true
+sudo chmod 4755      "$TARGET_ROOT/usr/bin/sudo"  2>/dev/null || true
+sudo chown root:root "$TARGET_ROOT/usr/bin/su"    2>/dev/null || true
+sudo chmod 4755      "$TARGET_ROOT/usr/bin/su"    2>/dev/null || true
     print_success "System files created"
 }
 
@@ -885,6 +953,9 @@ LAUNCH
 # ---------------------------------------------------------------------------
 main() {
     print_banner
+for arg in "$@"; do
+        [[ "$arg" == "--fetch" ]] && USE_FETCH=true
+    done
 
     echo "This builds Galactica with:"
     echo "  ✓ Full networking stack (TCP/IP, DHCP, DNS)"
@@ -907,15 +978,17 @@ main() {
     install_essentials  || exit 1
     create_system_files || exit 1
     strip_bloat
-    create_rootfs       || exit 1
-    create_launch_script
+    #create_rootfs       || exit 1
+    #create_launch_script
 
     print_banner
     echo -e "${GREEN}${BOLD}=== Build Complete! ===${NC}"
     echo ""
-    echo "Boot:  ./run-galactica.sh"
-    echo "Login: root / galactica"
+    echo "Build ISO:  ./make-iso.sh"
+
+    echo "Test Installer: ./test.sh"
+    echo "Test Installed System: ./test.sh boot"
     echo ""
 }
 
-main
+main "$@"

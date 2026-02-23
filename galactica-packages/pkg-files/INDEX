@@ -1,0 +1,8 @@
+core/base.pkg
+core/busybox.pkg
+core/airride.pkg
+core/poyo.pkg
+core/dreamland.pkg
+core/ginitrd.pkg
+core/base-config.pkg
+core/linux.pkg

@@ -1,0 +1,35 @@
+name: Release Busybox
+
+on:
+  push:
+    tags:
+      - 'busybox-*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release'
+        default: '1.35.0'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get busybox
+        run: sudo apt-get install -y busybox-static
+
+      - name: Package
+        run: |
+          mkdir release
+          cp /bin/busybox release/
+          tar -czf busybox-${{ github.ref_name || inputs.version }}.tar.gz -C release .
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name || format('busybox-{0}', inputs.version) }}
+          name: Busybox ${{ inputs.version || github.ref_name }}
+          files: busybox-*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

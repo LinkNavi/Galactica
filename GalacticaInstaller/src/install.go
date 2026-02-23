@@ -14,7 +14,11 @@ import (
 const MOUNT_POINT = "/mnt/galactica"
 
 var installError error = nil
-
+func unmountChroot() {
+	exec.Command("umount", filepath.Join(MOUNT_POINT, "proc")).Run()
+	exec.Command("umount", filepath.Join(MOUNT_POINT, "sys")).Run()
+	exec.Command("umount", filepath.Join(MOUNT_POINT, "dev")).Run()
+}
 func getSourceDir() string {
 	if env := os.Getenv("GALACTICA_SOURCE"); env != "" {
 		return env
@@ -332,45 +336,117 @@ func MountFilesystems(device string) error {
 // Base system + kernel
 // ============================================================
 
+
 func InstallBaseSystem() error {
-	if _, err := os.Stat(getSourceDir()); os.IsNotExist(err) {
-		return fmt.Errorf("source directory not found: %s (build Galactica first)", getSourceDir())
+	// Create minimal directory structure
+	dirs := []string{
+		"bin", "sbin", "usr/bin", "usr/sbin", "etc", "lib", "lib64",
+		"proc", "sys", "dev", "run", "tmp", "root", "home",
+		"var/log", "var/run", "boot",
+	}
+	for _, d := range dirs {
+		os.MkdirAll(filepath.Join(MOUNT_POINT, d), 0755)
+	}
+	os.Chmod(filepath.Join(MOUNT_POINT, "tmp"), 0o1777)
+	os.Chmod(filepath.Join(MOUNT_POINT, "root"), 0o700)
+
+	// Copy dreamland and its libs into the new root
+	dreamlandSrc := "/sbin/dreamland"
+	if !fileExists(dreamlandSrc) {
+		dreamlandSrc = "/usr/bin/dreamland"
+	}
+	if !fileExists(dreamlandSrc) {
+		return fmt.Errorf("dreamland not found in initrd")
+	}
+	dreamlandDst := filepath.Join(MOUNT_POINT, "usr/bin/dreamland")
+	if err := exec.Command("cp", dreamlandSrc, dreamlandDst).Run(); err != nil {
+		return fmt.Errorf("failed to copy dreamland: %w", err)
+	}
+	os.Chmod(dreamlandDst, 0755)
+	exec.Command("ln", "-sf", "dreamland", filepath.Join(MOUNT_POINT, "usr/bin/dl")).Run()
+
+	// Copy libs needed by dreamland
+	if err := exec.Command("cp", "-a", "/lib/.", filepath.Join(MOUNT_POINT, "lib")+"/").Run(); err != nil {
+		logf("WARNING: lib copy failed: %v\n", err)
+	}
+	if fileExists("/lib64") {
+		exec.Command("cp", "-a", "/lib64/.", filepath.Join(MOUNT_POINT, "lib64")+"/").Run()
 	}
 
-	cmd := exec.Command("rsync", "-aAX",
-    "--exclude=/boot/*",
-    "--exclude=/dev/*",
-    "--exclude=/proc/*",
-    "--exclude=/sys/*",
-    "--exclude=/run/*",
-    getSourceDir()+"/",
-    MOUNT_POINT+"/",
-)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to copy base system: %w (output: %s)", err, string(output))
+	// Copy static curl if present
+	for _, curlPath := range []string{"/usr/bin/curl", "/bin/curl"} {
+		if fileExists(curlPath) {
+			exec.Command("cp", curlPath, filepath.Join(MOUNT_POINT, "usr/bin/curl")).Run()
+			break
+		}
 	}
+
+	// Copy CA certs
+	for _, cert := range []string{"/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"} {
+		if fileExists(cert) {
+			os.MkdirAll(filepath.Join(MOUNT_POINT, "etc/ssl/certs"), 0755)
+			exec.Command("cp", cert, filepath.Join(MOUNT_POINT, "etc/ssl/certs/ca-certificates.crt")).Run()
+			break
+		}
+	}
+
+	// Copy busybox and create symlinks
+	for _, bbPath := range []string{"/bin/busybox"} {
+		if fileExists(bbPath) {
+			exec.Command("cp", bbPath, filepath.Join(MOUNT_POINT, "bin/busybox")).Run()
+			for _, cmd := range []string{"sh", "ash", "ls", "cat", "echo", "cp", "mv", "rm",
+				"mkdir", "mount", "umount", "sleep", "grep", "sed", "awk", "ps",
+				"kill", "ln", "chmod", "chown", "ip", "ping", "hostname", "uname",
+				"tar", "gzip", "gunzip", "udhcpc", "dmesg", "touch", "date"} {
+				os.Symlink("busybox", filepath.Join(MOUNT_POINT, "bin", cmd))
+			}
+			break
+		}
+	}
+
+	// Copy resolv.conf so dreamland can reach the internet
+	exec.Command("cp", "/etc/resolv.conf", filepath.Join(MOUNT_POINT, "etc/resolv.conf")).Run()
+
+	// Bind mount proc/sys/dev for chroot
+	exec.Command("mount", "--bind", "/proc", filepath.Join(MOUNT_POINT, "proc")).Run()
+	exec.Command("mount", "--bind", "/sys", filepath.Join(MOUNT_POINT, "sys")).Run()
+	exec.Command("mount", "--bind", "/dev", filepath.Join(MOUNT_POINT, "dev")).Run()
+
+	// Run dreamland sync then install base
+	logf("Running dreamland sync...\n")
+	out, err := exec.Command("chroot", MOUNT_POINT, "/usr/bin/dreamland", "sync").CombinedOutput()
+	logf("dreamland sync: %s\n", string(out))
+	if err != nil {
+		return fmt.Errorf("dreamland sync failed: %w", err)
+	}
+
+	logf("Running dreamland install base...\n")
+	out, err = exec.Command("chroot", MOUNT_POINT, "/usr/bin/dreamland", "install", "base").CombinedOutput()
+	logf("dreamland install base: %s\n", string(out))
+	if err != nil {
+		return fmt.Errorf("dreamland install base failed: %w", err)
+	}
+
 	return nil
 }
 
+
 func InstallKernel() error {
-	kernelSrc := filepath.Join(getSourceDir(), "boot", "vmlinuz-galactica")
-	kernelDst := filepath.Join(MOUNT_POINT, "boot", "vmlinuz-galactica")
-
-	if _, err := os.Stat(kernelSrc); os.IsNotExist(err) {
-		return fmt.Errorf("kernel not found at %s", kernelSrc)
+	logf("Running dreamland install linux...\n")
+	out, err := exec.Command("chroot", MOUNT_POINT, "/usr/bin/dreamland", "install", "linux").CombinedOutput()
+	logf("dreamland install linux: %s\n", string(out))
+	if err != nil {
+		// fallback: copy kernel from initrd if present
+		logf("WARNING: dreamland kernel install failed, trying fallback...\n")
+		for _, src := range []string{"/boot/vmlinuz-galactica", "/vmlinuz-galactica"} {
+			if fileExists(src) {
+				exec.Command("cp", src, filepath.Join(MOUNT_POINT, "boot/vmlinuz-galactica")).Run()
+				logf("Copied kernel from %s\n", src)
+				return nil
+			}
+		}
+		return fmt.Errorf("kernel install failed and no fallback kernel found")
 	}
-	if err := exec.Command("cp", kernelSrc, kernelDst).Run(); err != nil {
-		return fmt.Errorf("failed to copy kernel: %w", err)
-	}
-
-	// Copy kernel modules
-	modulesSrc := filepath.Join(getSourceDir(), "lib", "modules")
-	if _, err := os.Stat(modulesSrc); err == nil {
-		modulesDst := filepath.Join(MOUNT_POINT, "lib", "modules")
-		os.MkdirAll(modulesDst, 0755)
-		exec.Command("cp", "-r", modulesSrc+"/.", modulesDst+"/").Run()
-	}
-
 	return nil
 }
 
@@ -697,7 +773,9 @@ func GenerateFstab(device string) error {
 // ============================================================
 
 func FinalizeInstallation() error {
+unmountChroot()
 	exec.Command("sync").Run()
+
 
 	if isUEFI() {
 		exec.Command("umount", filepath.Join(MOUNT_POINT, "boot", "efi")).Run()

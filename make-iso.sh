@@ -316,9 +316,9 @@ MKTEMP=$(command -v mktemp)
     printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > "$ISO_INITRD/etc/resolv.conf"
 
     # Bundle galactica-build BEFORE packing
-    info "Bundling galactica-build into initrd..."
-    cp -a "$GALACTICA_BUILD/." "$ISO_INITRD/galactica-build/"
-    ok "galactica-build bundled"
+   info "Bundling galactica-build into initrd..."
+sudo cp -a "$GALACTICA_BUILD/." "$ISO_INITRD/galactica-build/"
+ok "galactica-build bundled"
 
     # init script
     cat > "$ISO_INITRD/init" << 'INIT_EOF'
@@ -408,9 +408,9 @@ INIT_EOF
 
     # Pack initrd
     info "Packing initrd..."
-    INITRD_OUT="$(realpath "$BUILD_DIR")/initrd.img"
-    (cd "$ISO_INITRD" && find . | cpio -H newc -o 2>/dev/null | gzip -1 > "$INITRD_OUT") || true
-    [[ -f "$INITRD_OUT" ]] || die "initrd.img not created"
+INITRD_OUT="$(realpath "$BUILD_DIR")/initrd.img"
+(cd "$ISO_INITRD" && sudo find . | sudo cpio -H newc -o 2>/dev/null | gzip -1 > "$INITRD_OUT") || true 
+[[ -f "$INITRD_OUT" ]] || die "initrd.img not created"
     ok "Initrd packed → $INITRD_OUT ($(du -sh "$INITRD_OUT" | cut -f1))"
 }
 

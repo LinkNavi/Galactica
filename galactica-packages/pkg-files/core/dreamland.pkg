@@ -1,0 +1,10 @@
+[Package]
+name = "dreamland"
+version = "1.0.0"
+description = "Dreamland package manager"
+url = "https://github.com/LinkNavi/Galactica/releases/download/dreamland-1.0.0/dreamland-1.0.0.tar.gz"
+category = "core"
+
+[Script]
+install -Dm755 dreamland /usr/bin/dreamland
+ln -sf dreamland /usr/bin/dl

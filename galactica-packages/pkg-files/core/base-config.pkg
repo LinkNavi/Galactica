@@ -1,0 +1,14 @@
+[Package]
+name = "base-config"
+version = "1.0.0"
+description = "Base system configuration and scripts"
+url = "https://github.com/LinkNavi/Galactica/releases/download/base-config-1.0.0/base-config-1.0.0.tar.gz"
+category = "core"
+
+[Script]
+cp -r etc/. /etc/
+cp -r sbin/. /sbin/
+cp -r usr/. /usr/
+chmod +x /sbin/network-setup /sbin/network-watchdog
+chmod +x /sbin/poweroff /sbin/reboot /sbin/halt /sbin/shutdown
+chmod +x /usr/bin/wifi-connect
