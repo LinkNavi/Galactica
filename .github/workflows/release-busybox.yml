@@ -9,6 +9,7 @@ on:
       version:
         description: 'Version to release'
         default: '1.35.0'
+        required: true
 
 jobs:
   release:
@@ -23,13 +24,13 @@ jobs:
         run: |
           mkdir release
           cp /bin/busybox release/
-          tar -czf busybox-${{ github.ref_name || inputs.version }}.tar.gz -C release .
+          tar -czf busybox-${{ inputs.version }}.tar.gz -C release .
 
       - name: Upload Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.ref_name || format('busybox-{0}', inputs.version) }}
-          name: Busybox ${{ inputs.version || github.ref_name }}
+          tag_name: busybox-${{ inputs.version }}
+          name: Busybox ${{ inputs.version }}
           files: busybox-*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

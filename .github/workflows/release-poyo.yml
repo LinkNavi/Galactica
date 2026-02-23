@@ -9,6 +9,7 @@ on:
       version:
         description: 'Version to release'
         default: '1.1.0'
+        required: true
 
 jobs:
   build-and-release:
@@ -26,13 +27,13 @@ jobs:
         run: |
           mkdir release
           cp Poyo/poyo release/
-          tar -czf poyo-${{ github.ref_name || inputs.version }}.tar.gz -C release .
+          tar -czf poyo-${{ inputs.version }}.tar.gz -C release .
 
       - name: Upload Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.ref_name || format('poyo-{0}', inputs.version) }}
-          name: Poyo ${{ inputs.version || github.ref_name }}
+          tag_name: poyo-${{ inputs.version }}
+          name: Poyo ${{ inputs.version }}
           files: poyo-*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

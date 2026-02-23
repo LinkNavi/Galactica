@@ -9,6 +9,7 @@ on:
       version:
         description: 'Version to release'
         default: '1.0.0'
+        required: true
 
 jobs:
   release:
@@ -20,13 +21,13 @@ jobs:
         run: |
           mkdir release
           cp ginitrd/ginitrd.sh release/
-          tar -czf ginitrd-${{ github.ref_name || inputs.version }}.tar.gz -C release .
+          tar -czf ginitrd-${{ inputs.version }}.tar.gz -C release .
 
       - name: Upload Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.ref_name || format('ginitrd-{0}', inputs.version) }}
-          name: ginitrd ${{ inputs.version || github.ref_name }}
+          tag_name: ginitrd-${{ inputs.version }}
+          name: ginitrd ${{ inputs.version }}
           files: ginitrd-*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

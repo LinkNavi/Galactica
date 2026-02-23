@@ -9,6 +9,7 @@ on:
       version:
         description: 'Version to release'
         default: '1.0.0'
+        required: true
 
 jobs:
   build-and-release:
@@ -31,13 +32,13 @@ jobs:
         run: |
           mkdir release
           cp Dreamland/build/dreamland release/
-          tar -czf dreamland-${{ github.ref_name || inputs.version }}.tar.gz -C release .
+          tar -czf dreamland-${{ inputs.version }}.tar.gz -C release .
 
       - name: Upload Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.ref_name || format('dreamland-{0}', inputs.version) }}
-          name: Dreamland ${{ inputs.version || github.ref_name }}
+          tag_name: dreamland-${{ inputs.version }}
+          name: Dreamland ${{ inputs.version }}
           files: dreamland-*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
