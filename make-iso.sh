@@ -1,5 +1,6 @@
 #!/bin/bash
 # make-iso.sh — Build a bootable Galactica Installer ISO
+set -e
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -11,6 +12,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 INSTALLER_DIR="./GalacticaInstaller"
+DREAMLAND_DIR="./Dreamland"
 BUILD_DIR="./iso-build"
 ISO_ROOT="$BUILD_DIR/iso-root"
 ISO_INITRD="$BUILD_DIR/initrd"
@@ -41,25 +43,24 @@ EOF
     echo ""
 }
 
+# ---------------------------------------------------------------------------
+# Step 1 — Preflight
+# ---------------------------------------------------------------------------
 preflight() {
     step 1 5 "Preflight Checks"
-
     local ok_flag=true
 
     for cmd in go gcc grub-mkrescue xorriso; do
-        if command -v "$cmd" &>/dev/null; then
-            ok "$cmd found"
-        else
-            err "$cmd not found"
-            ok_flag=false
-        fi
+        command -v "$cmd" &>/dev/null && ok "$cmd found" || { err "$cmd not found"; ok_flag=false; }
     done
 
-    [[ -d "$INSTALLER_DIR" ]] && ok "Installer source found" || { err "GalacticaInstaller/ not found"; ok_flag=false; }
-    [[ -d "$GALACTICA_BUILD" ]] && ok "galactica-build found" || { err "galactica-build/ not found — run build-and-launch.sh first"; ok_flag=false; }
-[[ -f "./ginitrd/ginitrd.sh" ]] && ok "ginitrd found" || { err "ginitrd/ginitrd.sh not found"; ok_flag=false; }
+    [[ -d "$INSTALLER_DIR" ]]       && ok "Installer source found"   || { err "GalacticaInstaller/ not found"; ok_flag=false; }
+    [[ -f "./ginitrd/ginitrd.sh" ]] && ok "ginitrd found"            || { err "ginitrd/ginitrd.sh not found"; ok_flag=false; }
+    [[ -f "$DREAMLAND_DIR/build/dreamland" ]] && ok "dreamland binary found" \
+        || { err "dreamland not built — run build-and-launch.sh first"; ok_flag=false; }
+
     if [[ ! -f "$KERNEL_SRC" ]]; then
-        warn "Kernel not found at $KERNEL_SRC — will try to use host kernel"
+        warn "Kernel not found at $KERNEL_SRC — will try host kernel"
         KERNEL_SRC=""
     else
         ok "Kernel found: $KERNEL_SRC"
@@ -68,32 +69,28 @@ preflight() {
     [[ "$ok_flag" == "true" ]] || die "Missing dependencies. Install them and retry."
 }
 
+# ---------------------------------------------------------------------------
+# Step 2 — Build installer binary
+# ---------------------------------------------------------------------------
 build_installer() {
     step 2 5 "Build Installer Binary"
 
-    if [[ -z "$GOROOT" ]]; then
-        GOROOT=$(go env GOROOT 2>/dev/null || true)
-    fi
-    if [[ -z "$GOROOT" ]]; then
-        GO_BIN=$(command -v go)
-        GOROOT=$(dirname "$(dirname "$(realpath "$GO_BIN")")")
-    fi
+    [[ -z "$GOROOT" ]] && GOROOT=$(go env GOROOT 2>/dev/null || true)
+    [[ -z "$GOROOT" ]] && GOROOT=$(dirname "$(dirname "$(realpath "$(command -v go)")")")
     export GOROOT
     export PATH="$GOROOT/bin:$PATH"
 
     CURRENT_PROXY=$(go env GOPROXY 2>/dev/null || true)
-    if [[ -z "$CURRENT_PROXY" || "$CURRENT_PROXY" == "off" ]]; then
-        export GOPROXY="https://proxy.golang.org,direct"
-    fi
+    [[ -z "$CURRENT_PROXY" || "$CURRENT_PROXY" == "off" ]] && export GOPROXY="https://proxy.golang.org,direct"
     export GONOSUMCHECK="*"
 
     cd "$INSTALLER_DIR"
-    info "Downloading dependencies... (GOPROXY=$GOPROXY)"
+    info "Downloading Go dependencies..."
     go mod download || die "go mod download failed"
 
     MODULE_NAME=$(grep '^module ' go.mod 2>/dev/null | awk '{print $2}')
     [[ -z "$MODULE_NAME" ]] && die "Could not read module name from go.mod"
-    info "Running go build... (module=$MODULE_NAME)"
+    info "Building... (module=$MODULE_NAME)"
 
     go build -o ../iso-installer-bin . 2>/dev/null || \
     go build -o ../iso-installer-bin ./src/ 2>/dev/null || \
@@ -104,6 +101,9 @@ build_installer() {
     ok "Installer binary built → iso-installer-bin"
 }
 
+# ---------------------------------------------------------------------------
+# Helper: copy shared libs for a binary into the initrd
+# ---------------------------------------------------------------------------
 copy_libs() {
     local bin="$1"
     [[ ! -f "$bin" ]] && return 0
@@ -114,170 +114,133 @@ copy_libs() {
         mkdir -p "$(dirname "$dest")"
         cp -L "$lib" "$dest" 2>/dev/null || true
     done
-    return 0
 }
 
+# ---------------------------------------------------------------------------
+# Step 3 — Build initrd
+# ---------------------------------------------------------------------------
 build_initrd() {
     step 3 5 "Build Initrd"
 
     rm -rf "$ISO_INITRD"
-    mkdir -p "$ISO_INITRD"/{bin,sbin,dev,proc,sys,run,tmp,etc,lib,lib64,usr/bin,usr/lib,usr/sbin,galactica-build}
+    mkdir -p "$ISO_INITRD"/{bin,sbin,dev,proc,sys,run,tmp,etc,lib,lib64,usr/bin,usr/sbin,usr/lib,usr/lib64,usr/share/udhcpc}
     chmod 1777 "$ISO_INITRD/tmp"
 
-    # busybox
-    BUSYBOX=$(command -v busybox 2>/dev/null)
-    [[ -z "$BUSYBOX" ]] && die "busybox not found"
+    # ── busybox ──────────────────────────────────────────────────────────
+    BUSYBOX=$(command -v busybox) || die "busybox not found"
     cp "$BUSYBOX" "$ISO_INITRD/bin/busybox"
     chmod +x "$ISO_INITRD/bin/busybox"
     for cmd in sh ash ls cat echo cp mv rm mkdir mount umount sleep \
-           grep sed awk ps kill ln chmod chown ip ifconfig ping \
-           hostname uname dmesg mkswap swapon losetup dd sync udhcpc \
-           setsid chvt openvt clear reset head tail sort uniq wc find \
-           cut du dirname basename tr xargs readlink realpath stat; do
+               grep sed awk ps kill ln chmod chown ip ifconfig ping \
+               hostname uname dmesg mkswap swapon losetup dd sync udhcpc \
+               setsid chvt openvt clear reset head tail sort uniq wc find \
+               cut du dirname basename tr xargs readlink realpath stat \
+               tar gzip gunzip xz; do
         ln -sf busybox "$ISO_INITRD/bin/$cmd" 2>/dev/null || true
     done
     ok "busybox installed"
 
-    # bash (needed for ginitrd which uses bash arrays)
-    BASH=$(command -v bash)
+    # ── bash (needed by ginitrd) ──────────────────────────────────────
+    BASH=$(command -v bash 2>/dev/null || true)
     if [[ -n "$BASH" ]]; then
         cp "$BASH" "$ISO_INITRD/bin/bash"
         copy_libs "$BASH"
-        # override busybox sh symlink with bash
-        ln -sf bash "$ISO_INITRD/bin/sh" || cp "$ISO_INITRD/bin/bash" "$ISO_INITRD/bin/sh"
-        # bash runtime libs
+        ln -sf bash "$ISO_INITRD/bin/sh" 2>/dev/null || true
         for lib in libreadline.so.8 libncursesw.so.6 libtinfo.so.6; do
             P=$(find /lib /lib64 /usr/lib /usr/lib64 -name "$lib" 2>/dev/null | head -1)
             [[ -n "$P" ]] && { mkdir -p "$ISO_INITRD$(dirname "$P")"; cp -L "$P" "$ISO_INITRD$(dirname "$P")/"; }
         done
         ok "bash installed"
     else
-        warn "bash not found on host — ginitrd may fail"
+        warn "bash not found — ginitrd may fail"
     fi
 
-    # installer binary
+    # ── installer binary ──────────────────────────────────────────────
     cp iso-installer-bin "$ISO_INITRD/sbin/galactica-installer"
     chmod 755 "$ISO_INITRD/sbin/galactica-installer"
+    copy_libs "$ISO_INITRD/sbin/galactica-installer"
     ok "installer binary installed"
 
-    # essential tools
+    # ── dreamland ─────────────────────────────────────────────────────
+    info "Installing dreamland..."
+    cp "$DREAMLAND_DIR/build/dreamland" "$ISO_INITRD/sbin/dreamland"
+    chmod 755 "$ISO_INITRD/sbin/dreamland"
+    copy_libs "$ISO_INITRD/sbin/dreamland"
+    ln -sf /sbin/dreamland "$ISO_INITRD/sbin/dl"
+    [[ -f "$ISO_INITRD/sbin/dreamland" ]] \
+        && ok "dreamland installed ($(du -sh "$ISO_INITRD/sbin/dreamland" | cut -f1))" \
+        || die "dreamland copy failed"
+
+    # ── essential tools ───────────────────────────────────────────────
     for tool in parted mkfs.ext4 mkfs.fat mkswap swapon blkid findfs partx \
-            rsync grub-install grub-bios-setup openssl zstd cpio \
-            mktemp file ldd mknod; do
-        TOOL_PATH=$(command -v "$tool" 2>/dev/null || true)
-        if [[ -n "$TOOL_PATH" ]]; then
-            cp "$TOOL_PATH" "$ISO_INITRD/sbin/" 2>/dev/null && ok "  tool: $tool" || warn "  could not copy $tool"
+                grub-install grub-bios-setup openssl zstd cpio mknod curl chroot; do
+        P=$(command -v "$tool" 2>/dev/null || true)
+        if [[ -n "$P" ]]; then
+            cp "$P" "$ISO_INITRD/sbin/$tool" \
+                && copy_libs "$ISO_INITRD/sbin/$tool" \
+                && ok "  tool: $tool" || warn "  could not copy $tool"
         else
-            warn "  tool not found (skipping): $tool"
+            warn "  skipping: $tool"
         fi
     done
 
-if [[ -f "./ginitrd/ginitrd.sh" ]]; then
+    # ginitrd
     cp "./ginitrd/ginitrd.sh" "$ISO_INITRD/sbin/ginitrd"
     chmod +x "$ISO_INITRD/sbin/ginitrd"
-    ok "ginitrd installed from ./ginitrd/ginitrd.sh"
-else
-    warn "ginitrd not found at ./ginitrd/ginitrd.sh"
-fi
-# ldd is usually a shell script, copy it properly
-LDD_PATH=$(command -v ldd)
-if [[ -n "$LDD_PATH" ]]; then
-    cp "$LDD_PATH" "$ISO_INITRD/sbin/ldd"
-    # ldd may reference the dynamic linker path directly — already copied above
-    ok "ldd installed"
-fi
+    ok "ginitrd installed"
 
-# file needs its magic database
-FILE_PATH=$(command -v file)
-if [[ -n "$FILE_PATH" ]]; then
-    cp "$FILE_PATH" "$ISO_INITRD/sbin/file"
-    copy_libs "$FILE_PATH"
-    MAGIC=$(file --version 2>&1 | grep -oP 'magic file.*?\K/\S+' || true)
-    [[ -z "$MAGIC" ]] && MAGIC="/usr/share/misc/magic.mgc"
-    if [[ -f "$MAGIC" ]]; then
-        mkdir -p "$ISO_INITRD$(dirname "$MAGIC")"
-        cp "$MAGIC" "$ISO_INITRD$(dirname "$MAGIC")/"
-    fi
-    # Also try the magic directory
-    [[ -d "/usr/share/misc/magic" ]] && {
-        mkdir -p "$ISO_INITRD/usr/share/misc"
-        cp -r /usr/share/misc/magic "$ISO_INITRD/usr/share/misc/"
-    }
-    ok "file installed"
-fi
-MKTEMP=$(command -v mktemp)
-[[ -n "$MKTEMP" ]] && cp "$MKTEMP" "$ISO_INITRD/bin/mktemp"
-    # grub modules for BIOS install
-    GRUB_MODS_SRC=""
+    # ldd
+    LDD_PATH=$(command -v ldd 2>/dev/null || true)
+    [[ -n "$LDD_PATH" ]] && { cp "$LDD_PATH" "$ISO_INITRD/sbin/ldd"; ok "ldd installed"; }
+
+    # ── grub modules ──────────────────────────────────────────────────
     for d in /usr/lib/grub/i386-pc /usr/share/grub/i386-pc; do
-        [[ -d "$d" ]] && GRUB_MODS_SRC="$d" && break
+        [[ -d "$d" ]] && {
+            mkdir -p "$ISO_INITRD/usr/lib/grub/i386-pc"
+            cp -r "$d"/. "$ISO_INITRD/usr/lib/grub/i386-pc/"
+            ok "grub i386-pc modules copied"; break
+        }
     done
-    if [[ -n "$GRUB_MODS_SRC" ]]; then
-        mkdir -p "$ISO_INITRD/usr/lib/grub/i386-pc"
-        cp -r "$GRUB_MODS_SRC"/. "$ISO_INITRD/usr/lib/grub/i386-pc/"
-        ok "grub i386-pc modules copied"
-    else
-        warn "grub i386-pc modules not found on host — bootloader install will fail"
-    fi
-
-    # grub modules for UEFI install
     for d in /usr/lib/grub/x86_64-efi /usr/share/grub/x86_64-efi; do
         [[ -d "$d" ]] && {
             mkdir -p "$ISO_INITRD/usr/lib/grub/x86_64-efi"
             cp -r "$d"/. "$ISO_INITRD/usr/lib/grub/x86_64-efi/"
-            ok "grub x86_64-efi modules copied"
-            break
+            ok "grub x86_64-efi modules copied"; break
         }
     done
-
-    # grub shared data files
     for d in /usr/share/grub /usr/lib/grub; do
-        [[ -d "$d" ]] && {
-            mkdir -p "$ISO_INITRD$d"
-            cp -r "$d"/. "$ISO_INITRD$d/"
-        }
+        [[ -d "$d" ]] && { mkdir -p "$ISO_INITRD$d"; cp -r "$d"/. "$ISO_INITRD$d/"; }
     done
 
-    # shared libraries
+    # ── shared libraries ──────────────────────────────────────────────
     info "Copying shared libraries..."
-    copy_libs "$ISO_INITRD/sbin/galactica-installer"
-    for f in "$ISO_INITRD/sbin/"*; do
-        copy_libs "$f"
+    for f in "$ISO_INITRD/sbin/"* "$ISO_INITRD/usr/bin/"*; do
+        [[ -f "$f" ]] && copy_libs "$f"
     done
-    copy_libs "$ISO_INITRD/bin/busybox"
 
-    # essential libc/linker
-    for lib in libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 libgcc_s.so.1; do
+    for lib in libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 libgcc_s.so.1 \
+               libstdc++.so.6 libresolv.so.2 libnss_dns.so.2 libnss_files.so.2; do
         P=$(find /lib /lib64 /usr/lib /usr/lib64 -name "$lib" 2>/dev/null | head -1)
-        if [[ -n "$P" ]]; then
-            DEST="$ISO_INITRD$(dirname "$P")"
-            mkdir -p "$DEST"
-            cp -L "$P" "$DEST/" 2>/dev/null || true
-        fi
+        [[ -n "$P" ]] && { mkdir -p "$ISO_INITRD$(dirname "$P")"; cp -L "$P" "$ISO_INITRD$(dirname "$P")/"; }
     done
     for linker in ld-linux-x86-64.so.2 ld-linux.so.2; do
         L=$(find /lib /lib64 /usr/lib /usr/lib64 -name "$linker" 2>/dev/null | head -1)
-        if [[ -n "$L" ]]; then
-            DEST="$ISO_INITRD$(dirname "$L")"
-            mkdir -p "$DEST"
-            cp -L "$L" "$DEST/"
-        fi
+        [[ -n "$L" ]] && { mkdir -p "$ISO_INITRD$(dirname "$L")"; cp -L "$L" "$ISO_INITRD$(dirname "$L")/"; }
     done
     ok "libraries copied"
 
-    # kernel modules
+    # ── kernel modules ────────────────────────────────────────────────
     info "Copying kernel modules..."
     GALACTICA_MODS=$(ls "$GALACTICA_BUILD/lib/modules/" 2>/dev/null | head -1)
     if [[ -n "$GALACTICA_MODS" ]]; then
         KVER="$GALACTICA_MODS"
         KMOD_SRC="$GALACTICA_BUILD/lib/modules/$KVER"
-        info "Using Galactica kernel modules: $KVER"
+        info "Using Galactica modules: $KVER"
     else
         KVER=$(uname -r)
         KMOD_SRC="/lib/modules/$KVER"
-        warn "No galactica modules found — using host kernel ($KVER)"
+        warn "No Galactica modules — using host kernel ($KVER)"
     fi
-
     mkdir -p "$ISO_INITRD/lib/modules/$KVER"
     for mod in virtio virtio_pci virtio_blk virtio_ring virtio_net scsi_mod sd_mod; do
         find "$KMOD_SRC" -name "${mod}.ko*" 2>/dev/null | while read -r m; do
@@ -290,15 +253,24 @@ MKTEMP=$(command -v mktemp)
     for f in modules.dep modules.alias modules.symbols modules.builtin modules.order; do
         [[ -f "$KMOD_SRC/$f" ]] && cp "$KMOD_SRC/$f" "$ISO_INITRD/lib/modules/$KVER/" || true
     done
-    ok "kernel modules copied (kernel: $KVER)"
+    ok "kernel modules copied ($KVER)"
 
-    # CA certs
+    # ── CA certs ──────────────────────────────────────────────────────
     mkdir -p "$ISO_INITRD/etc/ssl/certs"
-    for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+    for f in /etc/ssl/certs/ca-certificates.crt \
+              /etc/ca-certificates/extracted/tls-ca-bundle.pem \
+              /etc/pki/tls/certs/ca-bundle.crt; do
         [[ -f "$f" ]] && { cp "$f" "$ISO_INITRD/etc/ssl/certs/ca-certificates.crt"; ok "CA certs copied"; break; }
     done
+    # Arch fallback
+    if [[ ! -f "$ISO_INITRD/etc/ssl/certs/ca-certificates.crt" ]]; then
+        ARCH_CERT=$(find /etc/ssl/certs -name "*.crt" 2>/dev/null | head -1)
+        [[ -n "$ARCH_CERT" ]] \
+            && { cp "$ARCH_CERT" "$ISO_INITRD/etc/ssl/certs/ca-certificates.crt"; ok "CA certs copied (arch fallback)"; } \
+            || warn "CA certs not found — HTTPS may fail"
+    fi
 
-    # device nodes
+    # ── device nodes ──────────────────────────────────────────────────
     sudo mknod -m 600 "$ISO_INITRD/dev/console" c 5 1  2>/dev/null || true
     sudo mknod -m 666 "$ISO_INITRD/dev/null"    c 1 3  2>/dev/null || true
     sudo mknod -m 666 "$ISO_INITRD/dev/zero"    c 1 5  2>/dev/null || true
@@ -308,23 +280,18 @@ MKTEMP=$(command -v mktemp)
     for i in 0 1 2 3; do
         sudo mknod -m 620 "$ISO_INITRD/dev/tty$i" c 4 "$i" 2>/dev/null || true
     done
-    sudo mknod -m 660 "$ISO_INITRD/dev/ttyS0" c 4 64 2>/dev/null || true
+    sudo mknod -m 660 "$ISO_INITRD/dev/ttyS0"   c 4 64 2>/dev/null || true
     ok "device nodes created"
 
-    # /etc basics
+    # ── /etc basics ───────────────────────────────────────────────────
     echo "127.0.0.1 localhost" > "$ISO_INITRD/etc/hosts"
     printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > "$ISO_INITRD/etc/resolv.conf"
 
-    # Bundle galactica-build BEFORE packing
-   info "Bundling galactica-build into initrd..."
-sudo cp -a "$GALACTICA_BUILD/." "$ISO_INITRD/galactica-build/"
-ok "galactica-build bundled"
-
-    # init script
+    # ── init script ───────────────────────────────────────────────────
     cat > "$ISO_INITRD/init" << 'INIT_EOF'
 #!/bin/sh
-
 export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+
 mount -t proc     proc     /proc
 mount -t sysfs    sysfs    /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
@@ -336,8 +303,7 @@ KVER=$(uname -r)
 MODDIR="/lib/modules/$KVER"
 
 insmod_mod() {
-    local name="$1"
-    local alt="${name//-/_}"
+    local name="$1" alt="${1//-/_}"
     for ko in \
         "$MODDIR/kernel/drivers/virtio/${name}.ko" \
         "$MODDIR/kernel/drivers/virtio/${alt}.ko" \
@@ -356,35 +322,40 @@ insmod_mod() {
 }
 
 echo "[init] Loading modules (kernel $KVER)..."
-for m in virtio virtio_ring virtio_pci_modern_dev virtio_pci virtio_blk; do
-    insmod_mod "$m"
-done
-for m in libata ata_piix ahci libahci scsi_mod sd_mod nvme_core nvme; do
-    insmod_mod "$m"
-done
+for m in virtio virtio_ring virtio_pci_modern_dev virtio_pci virtio_net virtio_blk; do insmod_mod "$m"; done
+for m in libata ata_piix ahci libahci scsi_mod sd_mod nvme_core nvme; do insmod_mod "$m"; done
 echo "[init] Modules done"
-
-sleep 1
+sleep 2
 [ -x /bin/mdev ] && { echo /bin/mdev > /proc/sys/kernel/hotplug 2>/dev/null; mdev -s 2>/dev/null; } || true
+
 ip link set lo up 2>/dev/null || true
 
-for iface in eth0 ens3 enp0s3 enp0s2; do
-    [ -e "/sys/class/net/$iface" ] || continue
+for iface in $(ls /sys/class/net/ | grep -v -E '^(lo|dummy|sit|bond|tun|tap|virbr|veth)'); do
+	echo "[init] Trying $iface..."
     ip link set "$iface" up
-    udhcpc -i "$iface" -n -q -t 5 -T 3 2>/dev/null &
-    break
+    sleep 1
+    udhcpc -i "$iface" -n -q -t 5 -T 2 2>/dev/null
+    ip route show default 2>/dev/null | grep -q default && break
 done
 
-if [ -d "/galactica-build/boot" ]; then
-    echo "[init] galactica-build OK"
-else
-    echo "[init] WARNING: /galactica-build/boot missing"
-    ls /galactica-build 2>/dev/null || echo "(empty)"
-fi
+echo "[init] Waiting for network..."
+i=0
+while [ $i -lt 15 ]; do
+    i=$((i + 1))
+    ip route show default 2>/dev/null | grep -q default && break
+    sleep 1
+done
+ip route show default 2>/dev/null | grep -q default \
+    && echo "[init] Network OK" \
+    || echo "[init] WARNING: no network — install requires internet"
+
+[ -x /sbin/dreamland ] && echo "[init] dreamland OK" || {
+    echo "[init] ERROR: /sbin/dreamland not found or not executable"
+    ls -la /sbin/ 2>/dev/null
+}
 
 export TERM=linux
 export HOME=/root
-export PATH=/usr/bin:/usr/sbin:/bin:/sbin
 
 CONSOLE=$(cat /sys/class/tty/console/active 2>/dev/null | awk '{print $NF}')
 CONSOLE_DEV="/dev/${CONSOLE:-tty0}"
@@ -400,20 +371,48 @@ while true; do
     setsid sh -c "exec /sbin/galactica-installer <$CONSOLE_DEV >$CONSOLE_DEV 2>$CONSOLE_DEV"
     EXIT_CODE=$?
     echo ""
-    echo "[init] installer exited ($EXIT_CODE) — shell (exit to relaunch)"
+    echo "[init] installer exited ($EXIT_CODE) — drop to shell (exit to relaunch)"
     sh <$CONSOLE_DEV >$CONSOLE_DEV 2>$CONSOLE_DEV
 done
 INIT_EOF
     chmod 755 "$ISO_INITRD/init"
+cat > "$ISO_INITRD/usr/share/udhcpc/default.script" << 'EOF'
+#!/bin/sh
+case "$1" in
+    deconfig)
+        ip addr flush dev "$interface" 2>/dev/null
+        ip link set "$interface" up
+        ;;
+    bound|renew)
+        ip addr flush dev "$interface" 2>/dev/null
+        ip addr add "$ip/${mask:-24}" dev "$interface"
+        [ -n "$router" ] && {
+            ip route del default 2>/dev/null
+            ip route add default via "$router" dev "$interface"
+        }
+        [ -n "$dns" ] && printf 'nameserver %s\n' $dns > /etc/resolv.conf
+        echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+        ;;
+esac
+exit 0
+EOF
+chmod +x "$ISO_INITRD/usr/share/udhcpc/default.script"
+    # Final check before packing
+    [[ -f "$ISO_INITRD/sbin/dreamland" ]] || die "dreamland missing from initrd — aborting pack"
+    info "Initrd dreamland: $(du -sh "$ISO_INITRD/sbin/dreamland" | cut -f1)"
+    info "Initrd total size: $(du -sh "$ISO_INITRD" | cut -f1)"
 
-    # Pack initrd
+    # ── pack initrd ───────────────────────────────────────────────────
     info "Packing initrd..."
-INITRD_OUT="$(realpath "$BUILD_DIR")/initrd.img"
-(cd "$ISO_INITRD" && sudo find . | sudo cpio -H newc -o 2>/dev/null | gzip -1 > "$INITRD_OUT") || true 
-[[ -f "$INITRD_OUT" ]] || die "initrd.img not created"
+    INITRD_OUT="$(realpath "$BUILD_DIR")/initrd.img"
+    (cd "$ISO_INITRD" && sudo find . | sudo cpio -H newc -o 2>/dev/null | gzip -1 > "$INITRD_OUT") || true
+    [[ -f "$INITRD_OUT" ]] || die "initrd.img not created"
     ok "Initrd packed → $INITRD_OUT ($(du -sh "$INITRD_OUT" | cut -f1))"
 }
 
+# ---------------------------------------------------------------------------
+# Step 4 — Assemble ISO root
+# ---------------------------------------------------------------------------
 assemble_iso_root() {
     step 4 5 "Assemble ISO Root"
 
@@ -442,7 +441,7 @@ menuentry "Install Galactica Linux" {
 }
 
 menuentry "Install Galactica Linux (debug)" {
-    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0 debug loglevel=7
+    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0 console=ttyS0,115200 debug loglevel=7
     initrd /boot/initrd.img
 }
 
@@ -453,6 +452,9 @@ GRUB_EOF
     ok "GRUB config written"
 }
 
+# ---------------------------------------------------------------------------
+# Step 5 — Build ISO
+# ---------------------------------------------------------------------------
 build_iso() {
     step 5 5 "Build ISO with grub-mkrescue"
 
@@ -471,10 +473,13 @@ cleanup_build() {
     ok "Temp build files removed"
 }
 
-# ── main ──────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 banner
 
-echo "This will build a bootable installer ISO for Galactica Linux."
+echo "This will build a bootable Galactica installer ISO."
+echo "The installer uses Dreamland to fetch packages over the network."
 echo ""
 read -p "Continue? (y/n) [y]: " cont
 [[ "${cont:-y}" != "y" ]] && exit 0

@@ -175,86 +175,20 @@ build_airridectl() {
 # ---------------------------------------------------------------------------
 build_dreamland() {
     print_step 5 10 "Build Dreamland Package Manager"
-
-    local CURL_VER="8.5.0"
-    local CURL_TAR="../curl-cache/curl-${CURL_VER}.tar.gz"
-    local CURL_SRC="../curl-${CURL_VER}"
-    local CURL_LIB="/usr/local/lib/libcurl.a"
-
-    # Ask to rebuild if already built
-    if [[ -f "$CURL_LIB" ]]; then
-        read -p "[?] Static curl already built. Rebuild? (y/N): " rebuild
-        if [[ "${rebuild,,}" == "y" ]]; then
-            sudo rm -f "$CURL_LIB"
-            rm -rf "$CURL_SRC"
-        fi
-    fi
-
-    if [[ ! -f "$CURL_LIB" ]]; then
-        print_info "Building static curl $CURL_VER from source..."
-        mkdir -p "../curl-cache"
-
-        if [[ ! -f "$CURL_TAR" ]]; then
-            print_info "Downloading curl $CURL_VER..."
-            wget -q --show-progress -O "$CURL_TAR" \
-                "https://curl.se/download/curl-${CURL_VER}.tar.gz" \
-            || curl -L --progress-bar -o "$CURL_TAR" \
-                "https://curl.se/download/curl-${CURL_VER}.tar.gz" \
-            || { print_error "Failed to download curl source"; return 1; }
-        fi
-
-        [[ -d "$CURL_SRC" ]] && rm -rf "$CURL_SRC"
-        tar -xzf "$CURL_TAR" -C ".." \
-            || { print_error "Failed to extract curl"; return 1; }
-
-        cd "$CURL_SRC"
-        ./configure \
-            --disable-shared --enable-static \
-            --disable-ldap --disable-ldaps \
-            --disable-rtsp --disable-dict --disable-telnet \
-            --disable-tftp --disable-pop3 --disable-imap \
-            --disable-smtp --disable-gopher --disable-smb \
-            --disable-ftp --disable-sftp \
-            --without-libssh2 --without-gssapi \
-            --without-brotli --without-libpsl \
-            --without-nghttp2 --without-libidn2 \
-            --without-rtmp --without-librtmp \
-            --with-openssl \
-            --silent \
-            || { print_error "curl configure failed"; cd ../"$DREAMLAND_DIR"; return 1; }
-
-        make -j"$(nproc)" --silent \
-            || { print_error "curl make failed"; cd ../"$DREAMLAND_DIR"; return 1; }
-
-        sudo make install --silent \
-            || { print_error "curl install failed"; cd ../"$DREAMLAND_DIR"; return 1; }
-
-        cd ../
-        print_success "Static curl built"
-    else
-        print_info "Using existing static curl"
-    fi
-
-    print_info "Building Dreamland..."
     cd "$DREAMLAND_DIR"
     mkdir -p build
 
     g++ -o build/dreamland src/main.cpp \
-        -std=c++20 -O2 -fPIC \
-        -static \
-        -I/usr/local/include \
-        -L/usr/local/lib \
+        -std=c++20 -O2 -Wall -Wextra -fPIC \
         -lcurl -lssl -lcrypto \
-        -larchive -lz -lzstd -lbz2 -llzma -llz4 \
-        -lacl -lnettle -lhogweed -lgmp \
+        -larchive -lz -lzstd -lbz2 -llzma \
         -lpthread -ldl -lm \
         || { print_error "Dreamland build failed"; cd ..; return 1; }
 
     strip --strip-unneeded build/dreamland
-    print_success "Dreamland built ($(du -sh build/dreamland | cut -f1), static)"
+    print_success "Dreamland built ($(du -sh build/dreamland | cut -f1))"
     cd ..
 }
-
 # ---------------------------------------------------------------------------
 # Step 6 – Prepare root filesystem tree
 # ---------------------------------------------------------------------------

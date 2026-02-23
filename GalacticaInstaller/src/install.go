@@ -336,7 +336,6 @@ func MountFilesystems(device string) error {
 // Base system + kernel
 // ============================================================
 
-
 func InstallBaseSystem() error {
 	// Create minimal directory structure
 	dirs := []string{
@@ -366,15 +365,23 @@ func InstallBaseSystem() error {
 	exec.Command("ln", "-sf", "dreamland", filepath.Join(MOUNT_POINT, "usr/bin/dl")).Run()
 
 	// Copy libs needed by dreamland
+
 	if err := exec.Command("cp", "-a", "/lib/.", filepath.Join(MOUNT_POINT, "lib")+"/").Run(); err != nil {
 		logf("WARNING: lib copy failed: %v\n", err)
 	}
 	if fileExists("/lib64") {
 		exec.Command("cp", "-a", "/lib64/.", filepath.Join(MOUNT_POINT, "lib64")+"/").Run()
 	}
-
-	// Copy static curl if present
-	for _, curlPath := range []string{"/usr/bin/curl", "/bin/curl"} {
+	if fileExists("/usr/lib") {
+		os.MkdirAll(filepath.Join(MOUNT_POINT, "usr/lib"), 0755)
+		exec.Command("cp", "-a", "/usr/lib/.", filepath.Join(MOUNT_POINT, "usr/lib")+"/").Run()
+	}
+	if fileExists("/usr/lib64") {
+		os.MkdirAll(filepath.Join(MOUNT_POINT, "usr/lib64"), 0755)
+		exec.Command("cp", "-a", "/usr/lib64/.", filepath.Join(MOUNT_POINT, "usr/lib64")+"/").Run()
+	}
+	// Copy curl
+	for _, curlPath := range []string{"/usr/bin/curl", "/bin/curl", "/sbin/curl"} {
 		if fileExists(curlPath) {
 			exec.Command("cp", curlPath, filepath.Join(MOUNT_POINT, "usr/bin/curl")).Run()
 			break
@@ -382,7 +389,11 @@ func InstallBaseSystem() error {
 	}
 
 	// Copy CA certs
-	for _, cert := range []string{"/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"} {
+	for _, cert := range []string{
+		"/etc/ssl/certs/ca-certificates.crt",
+		"/etc/pki/tls/certs/ca-bundle.crt",
+		"/etc/ca-certificates/extracted/tls-ca-bundle.pem",
+	} {
 		if fileExists(cert) {
 			os.MkdirAll(filepath.Join(MOUNT_POINT, "etc/ssl/certs"), 0755)
 			exec.Command("cp", cert, filepath.Join(MOUNT_POINT, "etc/ssl/certs/ca-certificates.crt")).Run()
@@ -391,16 +402,13 @@ func InstallBaseSystem() error {
 	}
 
 	// Copy busybox and create symlinks
-	for _, bbPath := range []string{"/bin/busybox"} {
-		if fileExists(bbPath) {
-			exec.Command("cp", bbPath, filepath.Join(MOUNT_POINT, "bin/busybox")).Run()
-			for _, cmd := range []string{"sh", "ash", "ls", "cat", "echo", "cp", "mv", "rm",
-				"mkdir", "mount", "umount", "sleep", "grep", "sed", "awk", "ps",
-				"kill", "ln", "chmod", "chown", "ip", "ping", "hostname", "uname",
-				"tar", "gzip", "gunzip", "udhcpc", "dmesg", "touch", "date"} {
-				os.Symlink("busybox", filepath.Join(MOUNT_POINT, "bin", cmd))
-			}
-			break
+	if fileExists("/bin/busybox") {
+		exec.Command("cp", "/bin/busybox", filepath.Join(MOUNT_POINT, "bin/busybox")).Run()
+		for _, cmd := range []string{"sh", "ash", "ls", "cat", "echo", "cp", "mv", "rm",
+			"mkdir", "mount", "umount", "sleep", "grep", "sed", "awk", "ps",
+			"kill", "ln", "chmod", "chown", "ip", "ping", "hostname", "uname",
+			"tar", "gzip", "gunzip", "udhcpc", "dmesg", "touch", "date"} {
+			os.Symlink("busybox", filepath.Join(MOUNT_POINT, "bin", cmd))
 		}
 	}
 
@@ -412,16 +420,39 @@ func InstallBaseSystem() error {
 	exec.Command("mount", "--bind", "/sys", filepath.Join(MOUNT_POINT, "sys")).Run()
 	exec.Command("mount", "--bind", "/dev", filepath.Join(MOUNT_POINT, "dev")).Run()
 
-	// Run dreamland sync then install base
+	// Find chroot binary
+	chroot := "/sbin/chroot"
+	if !fileExists(chroot) {
+		chroot = "/usr/sbin/chroot"
+	}
+	if !fileExists(chroot) {
+		if p, err := exec.LookPath("chroot"); err == nil {
+			chroot = p
+		} else {
+			return fmt.Errorf("chroot not found in initrd")
+		}
+	}
+	logf("Using chroot: %s\n", chroot)
+
+	chrootEnv := []string{
+		"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/root",
+		"TERM=linux",
+	}
+
 	logf("Running dreamland sync...\n")
-	out, err := exec.Command("chroot", MOUNT_POINT, "/usr/bin/dreamland", "sync").CombinedOutput()
+	syncCmd := exec.Command(chroot, MOUNT_POINT, "/usr/bin/dreamland", "sync")
+	syncCmd.Env = chrootEnv
+	out, err := syncCmd.CombinedOutput()
 	logf("dreamland sync: %s\n", string(out))
 	if err != nil {
 		return fmt.Errorf("dreamland sync failed: %w", err)
 	}
 
 	logf("Running dreamland install base...\n")
-	out, err = exec.Command("chroot", MOUNT_POINT, "/usr/bin/dreamland", "install", "base").CombinedOutput()
+	installCmd := exec.Command(chroot, MOUNT_POINT, "/usr/bin/dreamland", "install", "base")
+	installCmd.Env = chrootEnv
+	out, err = installCmd.CombinedOutput()
 	logf("dreamland install base: %s\n", string(out))
 	if err != nil {
 		return fmt.Errorf("dreamland install base failed: %w", err)
@@ -432,11 +463,17 @@ func InstallBaseSystem() error {
 
 
 func InstallKernel() error {
+	chroot := "/sbin/chroot"
+	if !fileExists(chroot) {
+		chroot = "/usr/sbin/chroot"
+	}
+
 	logf("Running dreamland install linux...\n")
-	out, err := exec.Command("chroot", MOUNT_POINT, "/usr/bin/dreamland", "install", "linux").CombinedOutput()
+	cmd := exec.Command(chroot, MOUNT_POINT, "/usr/bin/dreamland", "install", "linux")
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root"}
+	out, err := cmd.CombinedOutput()
 	logf("dreamland install linux: %s\n", string(out))
 	if err != nil {
-		// fallback: copy kernel from initrd if present
 		logf("WARNING: dreamland kernel install failed, trying fallback...\n")
 		for _, src := range []string{"/boot/vmlinuz-galactica", "/vmlinuz-galactica"} {
 			if fileExists(src) {
