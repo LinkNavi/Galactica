@@ -1,5 +1,4 @@
 name: Build Galactica Kernel
-
 on:
   workflow_dispatch:
     inputs:
@@ -8,11 +7,13 @@ on:
         default: '6.18.4'
         required: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,8 +47,7 @@ jobs:
       - name: Install modules to staging dir
         run: |
           VERSION="${{ github.event.inputs.kernel_version }}"
-          mkdir -p staging/lib/modules
-          mkdir -p staging/boot
+          mkdir -p staging/lib/modules staging/boot
           cd "linux-${VERSION}"
           make modules_install INSTALL_MOD_PATH="../staging"
           cp arch/x86/boot/bzImage ../staging/boot/vmlinuz-galactica
@@ -64,3 +64,12 @@ jobs:
           name: galactica-kernel-${{ github.event.inputs.kernel_version }}
           path: galactica-kernel-${{ github.event.inputs.kernel_version }}.tar.gz
           retention-days: 7
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: galactica-kernel-${{ github.event.inputs.kernel_version }}
+          name: Galactica Kernel ${{ github.event.inputs.kernel_version }}
+          files: galactica-kernel-${{ github.event.inputs.kernel_version }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
