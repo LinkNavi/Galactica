@@ -354,6 +354,59 @@ class Dreamland {
     modules.clear();
   }
 
+  static std::string base64_encode(const std::string &in) {
+    static const char *b64 =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    int val = 0, valb = -6;
+    for (unsigned char c : in) {
+      val = (val << 8) + c;
+      valb += 8;
+      while (valb >= 0) {
+        out.push_back(b64[(val >> valb) & 0x3F]);
+        valb -= 6;
+      }
+    }
+    if (valb > -6)
+      out.push_back(b64[((val << 8) >> (valb + 8)) & 0x3F]);
+    while (out.size() % 4)
+      out.push_back('=');
+    return out;
+  }
+
+  static std::string base64_decode(const std::string &in) {
+    static const int lookup[256] = {
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, 62, -1, -1, -1, 63, 52, 53, 54, 55, 56, 57,
+        58, 59, 60, 61, -1, -1, -1, -1, -1, -1, -1, 0,  1,  2,  3,  4,  5,  6,
+        7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, -1, -1, -1, -1, -1, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+        37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1,
+    };
+    std::string out;
+    int val = 0, valb = -8;
+    for (unsigned char c : in) {
+      if (lookup[c] == -1)
+        break;
+      val = (val << 6) + lookup[c];
+      valb += 6;
+      if (valb >= 0) {
+        out.push_back((val >> valb) & 0xFF);
+        valb -= 8;
+      }
+    }
+    return out;
+  }
   void save_pkg_db() {
     std::ofstream f(pkg_db);
     if (!f)
@@ -369,8 +422,17 @@ class Dreamland {
           << p.filename << "|" << p.size << "|" << p.description << "|"
           << (p.deps_resolved ? "1" : "0") << "|" << deps_str << "\n";
       } else if (p.source == PackageSource::GALACTICA) {
+        // Encode build_script as base64 so newlines/pipes don't break parsing
+        std::string encoded_script = base64_encode(p.build_script);
+        // Encode deps as space-separated
+        std::string deps_str;
+        for (auto &d : p.dependencies)
+          deps_str += d + " ";
+        if (!deps_str.empty())
+          deps_str.pop_back();
         f << "GALACTICA|" << p.name << "|" << p.version << "|" << p.url << "|"
-          << p.category << "|" << p.description << "|" << p.type << "\n";
+          << p.category << "|" << p.description << "|" << p.type << "|"
+          << encoded_script << "|" << deps_str << "\n";
       }
     }
   }
@@ -414,13 +476,15 @@ class Dreamland {
         }
         packages[n] = p;
       } else if (type == "GALACTICA") {
-        std::string n, v, u, c, d, t;
+        std::string n, v, u, c, d, t, encoded_script, deps_str;
         std::getline(is, n, '|');
         std::getline(is, v, '|');
         std::getline(is, u, '|');
         std::getline(is, c, '|');
         std::getline(is, d, '|');
         std::getline(is, t, '|');
+        std::getline(is, encoded_script, '|');
+        std::getline(is, deps_str, '|');
         Package p;
         p.name = n;
         p.version = v;
@@ -428,7 +492,14 @@ class Dreamland {
         p.category = c;
         p.description = d;
         p.type = t;
+        p.build_script = base64_decode(encoded_script);
         p.source = PackageSource::GALACTICA;
+        if (!deps_str.empty()) {
+          std::istringstream ds(deps_str);
+          std::string dep;
+          while (ds >> dep)
+            p.dependencies.push_back(dep);
+        }
         packages[n] = p;
       }
     }
@@ -712,9 +783,60 @@ class Dreamland {
     return true;
   }
 
-  bool install_galactica(const Package &p) {
+  bool install_galactica(const Package &p_in) {
+    Package p = p_in;
+
+    // If the script is missing (old cache or db loaded without script),
+    // re-fetch the pkg file from GalacticaRepository to recover it.
+    if (p.build_script.empty()) {
+      dbg("build_script empty for " + p.name + ", re-fetching pkg file...");
+      bool refetched = false;
+      for (const auto &pkg_path : galactica_pkgs) {
+        // pkg_path looks like "core/airride.pkg" — name in filename
+        std::string basename = fs::path(pkg_path).stem().string();
+        if (basename == p.name) {
+          Package fresh;
+          // Temporarily put name so parse stores under right key
+          if (parse_galactica_pkg(pkg_path)) {
+            auto it = packages.find(p.name);
+            if (it != packages.end() && !it->second.build_script.empty()) {
+              p = it->second;
+              refetched = true;
+              dbg("Re-fetched build_script for " + p.name);
+            }
+          }
+          break;
+        }
+      }
+      if (!refetched) {
+        // galactica_pkgs index may be empty (fresh load from db, no sync).
+        // Try fetching the index first then retry.
+        if (galactica_pkgs.empty()) {
+          fetch_galactica();
+          for (const auto &pkg_path : galactica_pkgs) {
+            std::string basename = fs::path(pkg_path).stem().string();
+            if (basename == p.name) {
+              if (parse_galactica_pkg(pkg_path)) {
+                auto it = packages.find(p.name);
+                if (it != packages.end() && !it->second.build_script.empty()) {
+                  p = it->second;
+                  refetched = true;
+                }
+              }
+              break;
+            }
+          }
+        }
+        if (!refetched) {
+          err("Cannot install " + p.name + ": no install script available");
+          return false;
+        }
+      }
+    }
+
     std::cout << "Installing from source: " << PINK << p.name << RESET << " "
               << p.version << "\n";
+
     char cwd_buffer[PATH_MAX];
     if (getcwd(cwd_buffer, sizeof(cwd_buffer)) == nullptr) {
       err("Failed to get current directory");
@@ -722,6 +844,7 @@ class Dreamland {
     }
     std::string old_cwd = cwd_buffer;
     std::string build_path = build_dir + "/" + p.name;
+
     try {
       if (!fs::exists(build_dir))
         fs::create_directories(build_dir);
@@ -731,10 +854,12 @@ class Dreamland {
       err("Failed to create build directory: " + std::string(e.what()));
       return false;
     }
+
     if (chdir(build_path.c_str()) != 0) {
       err("Failed to change to build directory: " + build_path);
       return false;
     }
+
     if (!p.url.empty()) {
       status("Downloading source...");
       std::string src_filename;
@@ -743,11 +868,13 @@ class Dreamland {
                          ? p.url.substr(last_slash + 1)
                          : p.name + ".tar.gz";
       std::string src_file = build_path + "/" + src_filename;
+
       if (!dl_file(p.url, src_file)) {
         err("Failed to download source from: " + p.url);
         chdir(old_cwd.c_str());
         return false;
       }
+
       if (src_filename.find(".tar") != std::string::npos ||
           src_filename.find(".tgz") != std::string::npos) {
         status("Extracting...");
@@ -770,8 +897,11 @@ class Dreamland {
             return false;
           }
         }
-        // cd into extracted subdir for normal packages, stay put for kernel
-        if (p.type != "kernel") {
+
+        // Only cd into a subdir for source packages (e.g. kernel tarballs).
+        // Binary release tarballs (airride, poyo, etc.) have files at root —
+        // do NOT cd into a subdir or the binaries won't be in cwd.
+        if (p.type != "kernel" && p.type != "binary") {
           std::vector<fs::path> subdirs;
           for (auto &e : fs::directory_iterator(build_path))
             if (e.is_directory())
@@ -781,11 +911,12 @@ class Dreamland {
         }
       }
     }
+
     if (!p.build_script.empty()) {
-      status("Building...");
+      status("Running install script...");
       std::ofstream script("build.sh");
       if (!script.is_open()) {
-        err("Failed to create build script");
+        err("Failed to create install script");
         chdir(old_cwd.c_str());
         return false;
       }
@@ -794,12 +925,13 @@ class Dreamland {
       chmod("build.sh", 0755);
       int result = system("sh build.sh 2>&1");
       if (result != 0) {
-        err("Build failed with exit code: " +
+        err("Install script failed with exit code: " +
             std::to_string(WEXITSTATUS(result)));
         chdir(old_cwd.c_str());
         return false;
       }
     }
+
     chdir(old_cwd.c_str());
     Package ip = p;
     ip.installed = true;

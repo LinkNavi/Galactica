@@ -365,7 +365,6 @@ func InstallBaseSystem() error {
 	exec.Command("ln", "-sf", "dreamland", filepath.Join(MOUNT_POINT, "usr/bin/dl")).Run()
 
 	// Copy libs needed by dreamland
-
 	if err := exec.Command("cp", "-a", "/lib/.", filepath.Join(MOUNT_POINT, "lib")+"/").Run(); err != nil {
 		logf("WARNING: lib copy failed: %v\n", err)
 	}
@@ -380,6 +379,7 @@ func InstallBaseSystem() error {
 		os.MkdirAll(filepath.Join(MOUNT_POINT, "usr/lib64"), 0755)
 		exec.Command("cp", "-a", "/usr/lib64/.", filepath.Join(MOUNT_POINT, "usr/lib64")+"/").Run()
 	}
+
 	// Copy curl
 	for _, curlPath := range []string{"/usr/bin/curl", "/bin/curl", "/sbin/curl"} {
 		if fileExists(curlPath) {
@@ -449,13 +449,22 @@ func InstallBaseSystem() error {
 		return fmt.Errorf("dreamland sync failed: %w", err)
 	}
 
-	logf("Running dreamland install base...\n")
-	installCmd := exec.Command(chroot, MOUNT_POINT, "/usr/bin/dreamland", "install", "base")
-	installCmd.Env = chrootEnv
-	out, err = installCmd.CombinedOutput()
-	logf("dreamland install base: %s\n", string(out))
-	if err != nil {
-		return fmt.Errorf("dreamland install base failed: %w", err)
+	// Install only Galactica-native packages individually.
+	// Do NOT install the 'base' metapackage — it pulls Arch transitive deps
+	// (glibc, linux, systemd, etc.) which conflict with the host libs already
+	// copied into the chroot and causes download failures like the glibc error.
+	galacticaPkgs := []string{"busybox", "airride", "poyo", "ginitrd", "base-config"}
+	for _, pkg := range galacticaPkgs {
+		logf("Running dreamland install %s...\n", pkg)
+		cmd := exec.Command(chroot, MOUNT_POINT, "/usr/bin/dreamland", "install", pkg)
+		cmd.Env = chrootEnv
+		pkgOut, pkgErr := cmd.CombinedOutput()
+		logf("dreamland install %s: %s\n", pkg, string(pkgOut))
+		if pkgErr != nil {
+			// Non-fatal: log and continue. The binaries may already be present
+			// from the host copy above (busybox, curl, etc.).
+			logf("WARNING: dreamland install %s failed (continuing): %v\n", pkg, pkgErr)
+		}
 	}
 
 	return nil
@@ -468,9 +477,18 @@ func InstallKernel() error {
 		chroot = "/usr/sbin/chroot"
 	}
 
+	chrootEnv := []string{
+		"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/root",
+		"TERM=linux",
+	}
+
+	// Use the Galactica linux.pkg from GalacticaRepository, NOT Arch's 'linux'.
+	// The pkg file installs a pre-built kernel tarball released from the
+	// build-kernel.yml workflow, so no compilation happens here.
 	logf("Running dreamland install linux...\n")
 	cmd := exec.Command(chroot, MOUNT_POINT, "/usr/bin/dreamland", "install", "linux")
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root"}
+	cmd.Env = chrootEnv
 	out, err := cmd.CombinedOutput()
 	logf("dreamland install linux: %s\n", string(out))
 	if err != nil {
@@ -486,6 +504,7 @@ func InstallKernel() error {
 	}
 	return nil
 }
+
 
 // ============================================================
 // System configuration
