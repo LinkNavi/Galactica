@@ -148,10 +148,7 @@ build_poyo() {
 build_airride() {
     print_step 3 10 "Build AirRide Init"
     cd "$AIRRIDE_DIR/Init"
-    mkdir -p build
-    g++ -o build/airride src/main.cpp \
-        -Wall -Wextra -O2 -std=c++17 -fstack-protector-strong \
-        || { cd ../..; return 1; }
+    make
     print_success "AirRide built"
     cd ../..
 }
