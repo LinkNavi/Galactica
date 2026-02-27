@@ -13,15 +13,20 @@ jobs:
 
       - name: Install deps
         run: |
-          sudo apt-get install -y grub-pc-bin grub-efi-amd64-bin \
-            xorriso grub-common mtools golang gcc g++ \
-            libcurl4-openssl-dev libssl-dev libarchive-dev libzstd-dev
+          sudo apt-get update
+          sudo apt-get install -y --fix-missing \
+            grub-pc-bin grub-efi-amd64-bin xorriso grub-common mtools \
+            golang gcc g++ \
+            libcurl4-dev libssl-dev libarchive-dev libzstd-dev \
+            zlib1g-dev libbz2-dev
 
-      - name: Build everything
-        run: bash build-and-launch.sh --fetch
+      - name: Build components
+        run: |
+          bash build-and-launch.sh --fetch <<< "y"
 
       - name: Build ISO
-        run: bash make-iso.sh
+        run: |
+          bash make-iso.sh <<< "y"
 
       - name: Upload ISO
         uses: actions/upload-artifact@v4
