@@ -8,6 +8,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TERM: linux
+      DEBIAN_FRONTEND: noninteractive
     steps:
       - uses: actions/checkout@v4
 
@@ -17,16 +20,47 @@ jobs:
           sudo apt-get install -y --fix-missing \
             grub-pc-bin grub-efi-amd64-bin xorriso grub-common mtools \
             golang gcc g++ \
-            libcurl4-openssl-dev libssl-dev libarchive-dev libzstd-dev \
+            libcurl4-dev libssl-dev libarchive-dev libzstd-dev \
             zlib1g-dev libbz2-dev
+
+      - name: Download kernel artifact
+        run: |
+          gh run download --repo LinkNavi/Galactica \
+            --name galactica-kernel-6.18.4 \
+            --dir kernel-artifact || echo "No kernel artifact found"
+          if [ -f kernel-artifact/galactica-kernel-6.18.4.tar.gz ]; then
+            mkdir -p $HOME/kernels/galactica
+            tar -xzf kernel-artifact/galactica-kernel-6.18.4.tar.gz -C $HOME/kernels/galactica
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build components
         run: |
-          bash build-and-launch.sh --fetch <<< "y"
+          # Build poyo
+          cd Poyo
+          gcc -Wall -Wextra -O2 -D_GNU_SOURCE -fstack-protector-strong \
+              -o poyo src/main.c -lcrypt
+          cd ..
 
-      - name: Build ISO
+          # Build AirRide
+          cd AirRide/Init && mkdir -p build
+          g++ -o build/airride src/main.cpp -Wall -Wextra -O2 -std=c++17 -fstack-protector-strong
+          cd ../Ctl && mkdir -p build
+          g++ -o build/airridectl src/main.cpp -Wall -Wextra -O2 -std=c++17
+          cd ../..
+
+          # Build Dreamland
+          cd Dreamland && mkdir -p build
+          g++ -o build/dreamland src/main.cpp \
+              -std=c++20 -O2 -Wall -Wextra -fPIC \
+              -lcurl -lssl -lcrypto -lz -lzstd -larchive -lpthread -ldl
+          cd ..
+
+      - name: Prepare build dir and ISO
         run: |
-          bash make-iso.sh <<< "y"
+          echo "y" | TERM=linux bash build-and-launch.sh --fetch || true
+          echo "y" | TERM=linux bash make-iso.sh
 
       - name: Upload ISO
         uses: actions/upload-artifact@v4
