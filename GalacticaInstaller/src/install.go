@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
+	"context"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -177,17 +177,18 @@ func fileExists(path string) bool {
 }
 
 func getUUID(device string) (string, error) {
-	cmd := exec.Command("blkid", "-p", "-s", "UUID", "-o", "value", device)
-	output, err := cmd.Output()
-	if err != nil {
-		// fallback without -p
-		cmd = exec.Command("blkid", "-s", "UUID", "-o", "value", device)
-		output, err = cmd.Output()
-		if err != nil {
-			return "", err
-		}
-	}
-	return strings.TrimSpace(string(output)), nil
+    for i := 0; i < 5; i++ {
+        cmd := exec.Command("blkid", "-s", "UUID", "-o", "value", device)
+        output, err := cmd.Output()
+        if err == nil {
+            uuid := strings.TrimSpace(string(output))
+            if uuid != "" {
+                return uuid, nil
+            }
+        }
+        time.Sleep(1 * time.Second)
+    }
+    return "", fmt.Errorf("could not get UUID for %s", device)
 }
 
 // isUEFI returns true if the installer is running on a UEFI system.
@@ -799,7 +800,10 @@ func SetupUsers(rootPassword, username, userPassword string) error {
 }
 
 func generatePasswordHash(password string) (string, error) {
-	cmd := exec.Command("openssl", "passwd", "-6", "-salt", "galactica", password)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "openssl", "passwd", "-6", "-salt", "galactica", password)
+	cmd.Stdin = nil
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -812,23 +816,42 @@ func generatePasswordHash(password string) (string, error) {
 // ============================================================
 
 func GenerateFstab(device string) error {
-	bootPart := getPartitionPath(device, 1)
+    // Wait for partitions to settle after all the formatting/mounting
+    time.Sleep(2 * time.Second)
+    exec.Command("partx", "-u", device).Run()
+    time.Sleep(1 * time.Second)
+    
+    bootPart := getPartitionPath(device, 1)
 	swapPart := getPartitionPath(device, 2)
 	rootPart := getPartitionPath(device, 3)
 
-	bootUUID, _ := getUUID(bootPart)
-	swapUUID, _ := getUUID(swapPart)
-	rootUUID, _ := getUUID(rootPart)
+	bootUUID, err := getUUID(bootPart)
+	bootRef := bootPart
+	if err == nil && bootUUID != "" {
+		bootRef = "UUID=" + bootUUID
+	}
+
+	swapUUID, err := getUUID(swapPart)
+	swapRef := swapPart
+	if err == nil && swapUUID != "" {
+		swapRef = "UUID=" + swapUUID
+	}
+
+	rootUUID, err := getUUID(rootPart)
+	rootRef := rootPart
+	if err == nil && rootUUID != "" {
+		rootRef = "UUID=" + rootUUID
+	}
 
 	var bootEntry string
 	if isUEFI() {
-		bootEntry = fmt.Sprintf("UUID=%s  /boot/efi  vfat  defaults  0  2\n", bootUUID)
+		bootEntry = fmt.Sprintf("%s  /boot/efi  vfat  defaults  0  2\n", bootRef)
 	} else {
-		bootEntry = fmt.Sprintf("UUID=%s  /boot  ext4  defaults  0  2\n", bootUUID)
+		bootEntry = fmt.Sprintf("%s  /boot  ext4  defaults  0  2\n", bootRef)
 	}
 
-	fstab := fmt.Sprintf("# Galactica fstab\nUUID=%s  /      ext4  defaults  0  1\n%sUUID=%s  none   swap  sw        0  0\n",
-		rootUUID, bootEntry, swapUUID)
+	fstab := fmt.Sprintf("# Galactica fstab\n%s  /      ext4  defaults  0  1\n%s%s  none   swap  sw        0  0\n",
+		rootRef, bootEntry, swapRef)
 
 	if err := os.WriteFile(filepath.Join(MOUNT_POINT, "etc", "fstab"), []byte(fstab), 0644); err != nil {
 		return fmt.Errorf("failed to write fstab: %w", err)

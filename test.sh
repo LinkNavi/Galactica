@@ -37,6 +37,7 @@ qemu-system-x86_64 \
     -vga virtio \
     -usb -device usb-tablet \
     -netdev user,id=net0 -device e1000,netdev=net0 \
+    -serial file:/tmp/galactica-install.log \
     -no-reboot
 
 echo ""

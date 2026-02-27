@@ -441,7 +441,7 @@ set timeout=5
 set default=0
 
 menuentry "Install Galactica Linux" {
-    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0
+    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0 loglevel=0
     initrd /boot/initrd.img
 }
 
