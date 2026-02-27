@@ -3,21 +3,45 @@
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <regex>
 
 // Forward declaration from fetcher.cpp
 ArchResult arch_lookup(const std::string &pkgname);
 
-// Map one Gentoo atom to a DepResult.
-// pkg_name will be empty if the dep should be silently skipped.
-// needs_pkg will be true when the dep is AUR or not found in Arch at all —
-// the caller must generate a .pkg build file for it.
-DepResult map_dep(const std::string &atom) {
+// Strip bash variables like ${PV} from a string
+static std::string strip_bash_vars(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] == '$' && i + 1 < s.size() && s[i+1] == '{') {
+            size_t end = s.find('}', i + 2);
+            if (end != std::string::npos) {
+                i = end + 1;
+                continue;
+            }
+        }
+        out += s[i++];
+    }
+    return out;
+}
+
+DepResult map_dep(const std::string &atom_raw) {
+    if (atom_raw.empty()) return {};
+
+    // Strip bash vars before any processing
+    std::string atom = strip_bash_vars(atom_raw);
     if (atom.empty()) return {};
+
+    // Reject atoms that still contain unresolved variables or are clearly broken
+    if (atom.find('$') != std::string::npos) {
+        std::cerr << "[ebuild2pkg] Skipping atom with unresolvable vars: " << atom_raw << "\n";
+        return {};
+    }
 
     // ── Mapping table: exact match ────────────────────────────────────
     auto it = GENTOO_TO_GALACTICA.find(atom);
     if (it != GENTOO_TO_GALACTICA.end()) {
-        // Empty value means "skip this dep entirely"
         if (it->second.empty()) return {};
         return { it->second, false, atom };
     }
@@ -40,6 +64,9 @@ DepResult map_dep(const std::string &atom) {
         std::string cat = atom.substr(0, slash);
         for (const auto &bc : BUILD_ONLY_CATEGORIES)
             if (cat == bc) return {};
+        
+        // Skip policy/security categories that have no Arch equivalent
+        if (cat == "sec-policy" || cat == "virtual") return {};
     }
 
     // ── Arch / AUR lookup ─────────────────────────────────────────────
@@ -48,28 +75,42 @@ DepResult map_dep(const std::string &atom) {
         // Strip slot
         size_t c = pkgname.find(':');
         if (c != std::string::npos) pkgname = pkgname.substr(0, c);
-        // Strip version suffix (name-1.2.3 -> name)
-        size_t d = pkgname.rfind('-');
-        if (d != std::string::npos && !pkgname.empty() && isdigit((unsigned char)pkgname[d + 1]))
-            pkgname = pkgname.substr(0, d);
+        // Strip USE flags
+        size_t br = pkgname.find('[');
+        if (br != std::string::npos) pkgname = pkgname.substr(0, br);
+        // Strip leading version operators
+        size_t vi = 0;
+        while (vi < pkgname.size() && (pkgname[vi] == '>' || pkgname[vi] == '<' ||
+               pkgname[vi] == '=' || pkgname[vi] == '!'))
+            vi++;
+        pkgname = pkgname.substr(vi);
+        // Strip version suffix (name-1.2.3-r1 -> name)
+        std::regex ver_re("-\\d[\\d.a-zA-Z_-]*$");
+        pkgname = std::regex_replace(pkgname, ver_re, "");
+        // Strip revision
+        std::regex rev_re("-r\\d+$");
+        pkgname = std::regex_replace(pkgname, rev_re, "");
+
+        if (pkgname.empty()) return {};
 
         ArchResult ar = arch_lookup(pkgname);
 
         if (ar.source == ArchSource::OFFICIAL) {
-            // Dreamland can install this as an Arch binary — no .pkg needed
             std::cout << "[ebuild2pkg] Official: '" << atom << "' -> '" << ar.name << "'\n";
             return { ar.name, false, atom };
         }
 
         if (ar.source == ArchSource::AUR) {
-            // AUR package — Dreamland can't binary-install it, generate a .pkg
             std::cout << "[ebuild2pkg] AUR dep '" << ar.name << "' — will generate .pkg\n";
             return { ar.name, true, atom };
         }
 
-        // NOT_FOUND in Arch — try to pull from Gentoo ebuild
-        std::cerr << "[ebuild2pkg] Not in Arch: '" << atom << "' — will generate .pkg from Gentoo\n";
-        return { pkgname, true, atom };
+        // ar.name empty means the lookup said "skip"
+        if (!ar.name.empty()) {
+            std::cerr << "[ebuild2pkg] Not in Arch: '" << atom << "' — will generate .pkg from Gentoo\n";
+            return { pkgname, true, atom };
+        }
+        return {};  // skip
     }
 
     // Bare name with no category
@@ -77,8 +118,6 @@ DepResult map_dep(const std::string &atom) {
     return { atom, true, atom };
 }
 
-// Map a list of atoms.  Returns one DepResult per unique pkg_name,
-// preserving all metadata so callers know which deps need pkg files.
 std::vector<DepResult> map_deps(const std::vector<std::string> &atoms) {
     std::set<std::string> seen;
     std::vector<DepResult> results;
@@ -92,7 +131,6 @@ std::vector<DepResult> map_deps(const std::vector<std::string> &atoms) {
     return results;
 }
 
-// Detect what type of package this is and generate an appropriate install script
 std::string generate_install_script(const Ebuild &eb) {
     std::string name = eb.name;
     std::string desc = eb.description;

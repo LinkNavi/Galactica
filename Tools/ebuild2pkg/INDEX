@@ -10,3 +10,11 @@ dev/zora.pkg
 modules/workspace.pkg
 modules/opsec.pkg
 desktop/starview.pkg
+libs/ebuild2pkg_sudo-9999.pkg
+libs/ebuild2pkg_editor-wrapper-4-r1.pkg
+libs/ebuild2pkg_selinux-sudo-9999.pkg
+libs/openldap-2.1.30-r1-0.0.0.pkg
+libs/ebuild2pkg_libselinux-9999.pkg
+libs/libsepol-${PV}-0.0.0.pkg
+libs/ebuild2pkg_fts-standalone-1.2.7-r1.pkg
+libs/ebuild2pkg_skey-1.1.5-r14.pkg
