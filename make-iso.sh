@@ -329,12 +329,17 @@ sleep 2
 [ -x /bin/mdev ] && { echo /bin/mdev > /proc/sys/kernel/hotplug 2>/dev/null; mdev -s 2>/dev/null; } || true
 
 ip link set lo up 2>/dev/null || true
-
 for iface in $(ls /sys/class/net/ | grep -v -E '^(lo|dummy|sit|bond|tun|tap|virbr|veth)'); do
-	echo "[init] Trying $iface..."
+    echo "[init] Trying $iface..."
     ip link set "$iface" up
-    sleep 1
-    udhcpc -i "$iface" -n -q -t 5 -T 2 2>/dev/null
+    # Wait for link to actually come up (e1000 can take a while)
+    i=0
+    while [ $i -lt 10 ]; do
+        cat /sys/class/net/$iface/operstate 2>/dev/null | grep -q "up" && break
+        sleep 1
+        i=$((i + 1))
+    done
+    udhcpc -i "$iface" -n -q -t 10 -T 3 2>/dev/null
     ip route show default 2>/dev/null | grep -q default && break
 done
 
@@ -436,12 +441,12 @@ set timeout=5
 set default=0
 
 menuentry "Install Galactica Linux" {
-    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0 console=ttyS0,115200
+    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0
     initrd /boot/initrd.img
 }
 
 menuentry "Install Galactica Linux (debug)" {
-    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0 console=ttyS0,115200 debug loglevel=7
+    linux  /boot/vmlinuz root=/dev/ram0 rw console=tty0 debug loglevel=7
     initrd /boot/initrd.img
 }
 

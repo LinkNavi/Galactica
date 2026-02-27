@@ -25,11 +25,15 @@ jobs:
 
       - name: Build AirRide
         run: |
+          # Init — use Makefile so all source files are compiled
           cd AirRide/Init
           make
-          cd ../Ctl
-          mkdir -p build
+          cd ../..
+
+          # Ctl
+          cd AirRide/Ctl && mkdir -p build
           g++ -o build/airridectl src/main.cpp -Wall -Wextra -O2 -std=c++17
+          cd ../..
 
       - name: Package
         run: |

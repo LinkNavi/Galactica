@@ -3,33 +3,48 @@
 #include <iostream>
 #include <sstream>
 
-// Forward declarations
-std::string map_dep(const std::string &atom);
-std::vector<std::string> map_deps(const std::vector<std::string> &atoms);
+// Forward declarations from mapper.cpp
+std::vector<DepResult> map_deps(const std::vector<std::string> &atoms);
 std::string generate_install_script(const Ebuild &eb);
 
-// Merge rdepend + depend, dedup, map to Galactica names
-static std::vector<std::string> build_dep_list(const Ebuild &eb) {
+// Returned by ebuild_to_pkg so convert_file can see which deps need pkg files.
+struct ConvertResult {
+    PkgFile              pkg;
+    std::vector<DepResult> pending; // deps with needs_pkg == true
+};
+
+// Merge rdepend + depend without duplicates
+static std::vector<std::string> merged_atoms(const Ebuild &eb) {
     std::vector<std::string> all = eb.rdepend;
     for (const auto &d : eb.depend) {
-        bool found = false;
-        for (const auto &r : eb.rdepend)
-            if (r == d) { found = true; break; }
-        if (!found) all.push_back(d);
+        bool dup = false;
+        for (const auto &r : eb.rdepend) if (r == d) { dup = true; break; }
+        if (!dup) all.push_back(d);
     }
-    return map_deps(all);
+    return all;
 }
 
-PkgFile ebuild_to_pkg(const Ebuild &eb, const std::string &category) {
+ConvertResult ebuild_to_pkg(const Ebuild &eb, const std::string &category) {
+    auto dep_results = map_deps(merged_atoms(eb));
+
     PkgFile pkg;
-    pkg.name        = eb.name;
-    pkg.version     = eb.version;
-    pkg.description = eb.description;
-    pkg.url         = eb.src_uri;
-    pkg.category    = category.empty() ? "misc" : category;
-    pkg.depends     = build_dep_list(eb);
+    pkg.name           = eb.name;
+    pkg.version        = eb.version;
+    pkg.description    = eb.description;
+    pkg.url            = eb.src_uri;
+    pkg.category       = category.empty() ? "misc" : category;
     pkg.install_script = generate_install_script(eb);
-    return pkg;
+
+    ConvertResult result;
+    result.pkg = pkg;
+
+    for (const auto &dr : dep_results) {
+        result.pkg.depends.push_back(dr.pkg_name);
+        if (dr.needs_pkg)
+            result.pending.push_back(dr);
+    }
+
+    return result;
 }
 
 bool write_pkg_file(const PkgFile &pkg, const std::string &outpath) {
@@ -39,12 +54,12 @@ bool write_pkg_file(const PkgFile &pkg, const std::string &outpath) {
         return false;
     }
 
-    f << "[Package]\n";
-    f << "name = \"" << pkg.name << "\"\n";
-    f << "version = \"" << pkg.version << "\"\n";
-    f << "description = \"" << pkg.description << "\"\n";
-    f << "url = \"" << pkg.url << "\"\n";
-    f << "category = \"" << pkg.category << "\"\n";
+    f << "[Package]\n"
+      << "name = \""        << pkg.name        << "\"\n"
+      << "version = \""     << pkg.version     << "\"\n"
+      << "description = \"" << pkg.description << "\"\n"
+      << "url = \""         << pkg.url         << "\"\n"
+      << "category = \""    << pkg.category    << "\"\n";
 
     f << "\n[Dependencies]\n";
     if (!pkg.depends.empty()) {
@@ -56,8 +71,8 @@ bool write_pkg_file(const PkgFile &pkg, const std::string &outpath) {
         f << "\"\n";
     }
 
-    f << "\n[Script]\n";
-    f << pkg.install_script;
+    f << "\n[Script]\n"
+      << pkg.install_script;
 
     std::cout << "[ebuild2pkg] Written: " << outpath << std::endl;
     return true;

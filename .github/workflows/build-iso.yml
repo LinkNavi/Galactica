@@ -19,7 +19,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --fix-missing \
             grub-pc-bin grub-efi-amd64-bin xorriso grub-common mtools \
-            golang gcc g++ \
+            golang gcc g++ make \
             libcurl4-openssl-dev libssl-dev libarchive-dev libzstd-dev \
             zlib1g-dev libbz2-dev
 
@@ -43,10 +43,13 @@ jobs:
               -o poyo src/main.c -lcrypt
           cd ..
 
-          # Build AirRide
-          cd AirRide/Init && mkdir -p build
-          g++ -o build/airride src/main.cpp -Wall -Wextra -O2 -std=c++17 -fstack-protector-strong
-          cd ../Ctl && mkdir -p build
+          # Build AirRide Init (use Makefile so all source files are compiled)
+          cd AirRide/Init
+          make
+          cd ../..
+
+          # Build AirRide Ctl
+          cd AirRide/Ctl && mkdir -p build
           g++ -o build/airridectl src/main.cpp -Wall -Wextra -O2 -std=c++17
           cd ../..
 

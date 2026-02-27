@@ -17,11 +17,11 @@ BIN  = build/airride
 all: $(BIN)
 
 build/%.o: src/%.cpp include/airride.h include/service.h
-	$(shell test -d build || mkdir build)
+	mkdir -p build
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BIN): $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ -lpthread
 
 clean:
-	$(shell rm -rf build)
+	rm -rf build

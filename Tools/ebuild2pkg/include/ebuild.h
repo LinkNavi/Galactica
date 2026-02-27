@@ -3,6 +3,8 @@
 #include <vector>
 #include <map>
 
+// ── Core data structures ──────────────────────────────────────────────────────
+
 struct Ebuild {
     std::string name;
     std::string version;
@@ -23,8 +25,38 @@ struct PkgFile {
     std::string install_script;
 };
 
-// Gentoo category/atom -> Galactica package name
-// Format: "category/atom" or just "atom" for catch-all
+// ── Arch lookup result ────────────────────────────────────────────────────────
+
+// Where a dep was found (or not) in the Arch ecosystem.
+// OFFICIAL: Dreamland install_arch() can handle it as a binary — no .pkg needed.
+// AUR:      Not in binary repos; we must generate a .pkg build file.
+// NOT_FOUND: Not in Arch at all; try to source from Gentoo ebuild.
+enum class ArchSource {
+    OFFICIAL,
+    AUR,
+    NOT_FOUND,
+};
+
+struct ArchResult {
+    std::string name;                         // Arch/AUR package name (empty if NOT_FOUND)
+    ArchSource  source = ArchSource::NOT_FOUND;
+};
+
+// ── Dep mapping result ────────────────────────────────────────────────────────
+
+// Result of mapping one Gentoo atom to a Galactica dep name.
+// pkg_name   — the name to emit in [Dependencies] depends = "..."
+// needs_pkg  — true when we must generate a .pkg for this dep
+//              (source was AUR or NOT_FOUND — Dreamland can't binary-install it)
+// gentoo_atom — preserved so convert_file can fetch the ebuild for this dep
+struct DepResult {
+    std::string pkg_name;
+    bool        needs_pkg  = false;
+    std::string gentoo_atom;
+};
+
+// ── Mapping tables ────────────────────────────────────────────────────────────
+
 static const std::map<std::string, std::string> GENTOO_TO_GALACTICA = {
     // libs
     {"dev-libs/glib",                   "glib2"},
@@ -104,7 +136,6 @@ static const std::map<std::string, std::string> GENTOO_TO_GALACTICA = {
     {"dev-util/ninja",                  "ninja"},
 };
 
-// Gentoo categories that are purely build-time tools — skip from runtime deps
 static const std::vector<std::string> BUILD_ONLY_CATEGORIES = {
     "dev-util", "app-arch", "sys-devel",
 };

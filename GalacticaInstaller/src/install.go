@@ -14,6 +14,7 @@ import (
 const MOUNT_POINT = "/mnt/galactica"
 
 var installError error = nil
+
 func unmountChroot() {
 	exec.Command("umount", filepath.Join(MOUNT_POINT, "proc")).Run()
 	exec.Command("umount", filepath.Join(MOUNT_POINT, "sys")).Run()
@@ -31,6 +32,7 @@ func getSourceDir() string {
 	}
 	return "/galactica-build"
 }
+
 var installLog *os.File
 
 func initLog() {
@@ -45,11 +47,12 @@ func initLog() {
 
 func logf(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	fmt.Print(msg)
+	//	fmt.Print(msg)
 	if installLog != nil {
 		installLog.WriteString(msg)
 	}
 }
+
 // ============================================================
 // Tea messages
 // ============================================================
@@ -69,7 +72,7 @@ var installationRunning bool = false
 // ============================================================
 
 func (m Model) doInstall() tea.Cmd {
-initLog()
+	initLog()
 	currentInstallStep = 0
 	installationRunning = true
 	installError = nil
@@ -78,7 +81,18 @@ initLog()
 		steps := []struct {
 			name string
 			fn   func(string, string, string, string, string) error
-		}{
+		}{{"Setting up network", func(_, _, _, _, _ string) error {
+			// Try DHCP on common interfaces
+			for _, iface := range []string{"eth0", "ens3", "ens33", "enp0s3", "enp1s0"} {
+				exec.Command("ip", "link", "set", iface, "up").Run()
+				cmd := exec.Command("udhcpc", "-i", iface, "-t", "5", "-T", "3", "-q")
+				if err := cmd.Run(); err == nil {
+					logf("Network up on %s\n", iface)
+					return nil
+				}
+			}
+			return fmt.Errorf("could not bring up network on any interface")
+		}},
 			{"Partitioning disk", func(disk, _, _, _, _ string) error {
 				if err := UnmountDisk(disk); err != nil {
 					return fmt.Errorf("unmount failed: %w", err)
@@ -116,7 +130,6 @@ initLog()
 			{"Finalizing installation", func(_, _, _, _, _ string) error {
 				return FinalizeInstallation()
 			}},
-
 		}
 
 		for i, step := range steps {
@@ -130,11 +143,11 @@ initLog()
 
 		currentInstallStep = len(steps)
 		installationRunning = false
- exec.Command("cp", "/var/log/galactica-install.log",
-        filepath.Join(MOUNT_POINT, "var", "log", "galactica-install.log")).Run()
+		exec.Command("cp", "/var/log/galactica-install.log",
+			filepath.Join(MOUNT_POINT, "var", "log", "galactica-install.log")).Run()
 	}()
-exec.Command("cp", "/var/log/galactica-install.log",
-    filepath.Join(MOUNT_POINT, "var", "log", "galactica-install.log")).Run()
+	exec.Command("cp", "/var/log/galactica-install.log",
+		filepath.Join(MOUNT_POINT, "var", "log", "galactica-install.log")).Run()
 	return installProgressTicker()
 }
 
@@ -470,7 +483,6 @@ func InstallBaseSystem() error {
 	return nil
 }
 
-
 func InstallKernel() error {
 	chroot := "/sbin/chroot"
 	if !fileExists(chroot) {
@@ -504,7 +516,6 @@ func InstallKernel() error {
 	}
 	return nil
 }
-
 
 // ============================================================
 // System configuration
@@ -673,10 +684,10 @@ func buildInitramfsAndWriteGRUB(rootPart, bootPart string) error {
 	hasNormal := fileExists(normalImg)
 	hasFallback := fileExists(fallbackImg)
 	return writeGRUBConfig(hasNormal, hasFallback, rootPart, bootPart)
-}// writeGRUBConfig writes /boot/grub/grub.cfg inside the target.
+} // writeGRUBConfig writes /boot/grub/grub.cfg inside the target.
 // hasInitramfs and hasFallback control whether initrd lines are included.
 func writeGRUBConfig(hasInitramfs bool, hasFallback bool, rootPart string, bootPart string) error {
-grubDir := filepath.Join(MOUNT_POINT, "boot", "grub")
+	grubDir := filepath.Join(MOUNT_POINT, "boot", "grub")
 	if err := os.MkdirAll(grubDir, 0755); err != nil {
 		return fmt.Errorf("failed to create grub dir: %w", err)
 	}
@@ -731,6 +742,7 @@ menuentry "Galactica Linux (recovery)" {
 
 	return os.WriteFile(filepath.Join(grubDir, "grub.cfg"), []byte(config), 0644)
 }
+
 // ============================================================
 // Users
 // ============================================================
@@ -775,13 +787,13 @@ func SetupUsers(rootPassword, username, userPassword string) error {
 		return fmt.Errorf("failed to write sudoers: %w", err)
 	}
 
-for _, bin := range []string{"/bin/su", "/usr/bin/sudo", "/bin/mount", "/bin/umount"} {
-    path := filepath.Join(MOUNT_POINT, bin)
-    if _, err := os.Stat(path); err == nil {
-        os.Lchown(path, 0, 0)
-        os.Chmod(path, 0o4755)
-    }
-}
+	for _, bin := range []string{"/bin/su", "/usr/bin/sudo", "/bin/mount", "/bin/umount"} {
+		path := filepath.Join(MOUNT_POINT, bin)
+		if _, err := os.Stat(path); err == nil {
+			os.Lchown(path, 0, 0)
+			os.Chmod(path, 0o4755)
+		}
+	}
 
 	return nil
 }
@@ -829,9 +841,8 @@ func GenerateFstab(device string) error {
 // ============================================================
 
 func FinalizeInstallation() error {
-unmountChroot()
+	unmountChroot()
 	exec.Command("sync").Run()
-
 
 	if isUEFI() {
 		exec.Command("umount", filepath.Join(MOUNT_POINT, "boot", "efi")).Run()
