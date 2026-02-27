@@ -20,7 +20,7 @@ jobs:
           sudo apt-get install -y --fix-missing \
             grub-pc-bin grub-efi-amd64-bin xorriso grub-common mtools \
             golang gcc g++ \
-            libcurl4-dev libssl-dev libarchive-dev libzstd-dev \
+            libcurl4-openssl-dev libssl-dev libarchive-dev libzstd-dev \
             zlib1g-dev libbz2-dev
 
       - name: Download kernel artifact
