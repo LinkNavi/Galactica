@@ -1,0 +1,31 @@
+name: Build ISO
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get install -y grub-pc-bin grub-efi-amd64-bin \
+            xorriso grub-common mtools golang gcc g++ \
+            libcurl4-openssl-dev libssl-dev libarchive-dev libzstd-dev
+
+      - name: Build everything
+        run: bash build-and-launch.sh --fetch
+
+      - name: Build ISO
+        run: bash make-iso.sh
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: galactica-installer-iso
+          path: galactica-installer.iso
+          retention-days: 7
