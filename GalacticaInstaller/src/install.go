@@ -47,7 +47,6 @@ func initLog() {
 
 func logf(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	//	fmt.Print(msg)
 	if installLog != nil {
 		installLog.WriteString(msg)
 	}
@@ -82,7 +81,6 @@ func (m Model) doInstall() tea.Cmd {
 			name string
 			fn   func(string, string, string, string, string) error
 		}{{"Setting up network", func(_, _, _, _, _ string) error {
-			// Try DHCP on common interfaces
 			for _, iface := range []string{"eth0", "ens3", "ens33", "enp0s3", "enp1s0"} {
 				exec.Command("ip", "link", "set", iface, "up").Run()
 				cmd := exec.Command("udhcpc", "-i", iface, "-t", "5", "-T", "3", "-q")
@@ -177,21 +175,20 @@ func fileExists(path string) bool {
 }
 
 func getUUID(device string) (string, error) {
-    for i := 0; i < 5; i++ {
-        cmd := exec.Command("blkid", "-s", "UUID", "-o", "value", device)
-        output, err := cmd.Output()
-        if err == nil {
-            uuid := strings.TrimSpace(string(output))
-            if uuid != "" {
-                return uuid, nil
-            }
-        }
-        time.Sleep(1 * time.Second)
-    }
-    return "", fmt.Errorf("could not get UUID for %s", device)
+	for i := 0; i < 5; i++ {
+		cmd := exec.Command("blkid", "-s", "UUID", "-o", "value", device)
+		output, err := cmd.Output()
+		if err == nil {
+			uuid := strings.TrimSpace(string(output))
+			if uuid != "" {
+				return uuid, nil
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return "", fmt.Errorf("could not get UUID for %s", device)
 }
 
-// isUEFI returns true if the installer is running on a UEFI system.
 func isUEFI() bool {
 	_, err := os.Stat("/sys/firmware/efi")
 	return err == nil
@@ -205,7 +202,6 @@ func PartitionDisk(device string) error {
 	isLoop := strings.Contains(device, "loop")
 	uefi := isUEFI()
 
-	// Wipe existing partition table
 	cmd := exec.Command("dd", "if=/dev/zero", "of="+device, "bs=512", "count=1")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to wipe disk: %w (output: %s)", err, string(output))
@@ -214,10 +210,6 @@ func PartitionDisk(device string) error {
 	time.Sleep(500 * time.Millisecond)
 
 	if uefi {
-		// GPT layout:
-		//   1 — EFI  (FAT32, 512 MB)
-		//   2 — swap (2 GB)
-		//   3 — root (rest)
 		cmds := [][]string{
 			{"parted", "-s", device, "mklabel", "gpt"},
 			{"parted", "-s", "-a", "optimal", device, "mkpart", "EFI", "fat32", "1MiB", "513MiB"},
@@ -231,10 +223,6 @@ func PartitionDisk(device string) error {
 			}
 		}
 	} else {
-		// MBR layout:
-		//   1 — boot (ext4, 512 MB)
-		//   2 — swap (2 GB)
-		//   3 — root (rest)
 		cmds := [][]string{
 			{"parted", "-s", device, "mklabel", "msdos"},
 			{"parted", "-s", "-a", "optimal", device, "mkpart", "primary", "ext4", "1MiB", "513MiB"},
@@ -261,7 +249,6 @@ func PartitionDisk(device string) error {
 		time.Sleep(1 * time.Second)
 	}
 
-	// Wait for partitions to appear
 	for i := 0; i < 10; i++ {
 		if _, err := os.Stat(getPartitionPath(device, 1)); err == nil {
 			return nil
@@ -350,8 +337,22 @@ func MountFilesystems(device string) error {
 // Base system + kernel
 // ============================================================
 
+// hostProvidedPackages returns the installed.db content for packages
+// that are already satisfied by the host lib copy, so dreamland won't
+// try to download/install them (glibc in particular always fails because
+// the Arch tarball conflicts with the already-copied host libs).
+func hostProvidedPackages() string {
+	return strings.Join([]string{
+		"glibc 2.39 arch ",
+		"gcc-libs 14.2 arch ",
+		"linux-api-headers 6.6 arch ",
+		"tzdata 2024a arch ",
+		"filesystem 2024.01 arch ",
+		"iana-etc 20240125 arch ",
+	}, "\n") + "\n"
+}
+
 func InstallBaseSystem() error {
-	// Create minimal directory structure
 	dirs := []string{
 		"bin", "sbin", "usr/bin", "usr/sbin", "etc", "lib", "lib64",
 		"proc", "sys", "dev", "run", "tmp", "root", "home",
@@ -363,7 +364,6 @@ func InstallBaseSystem() error {
 	os.Chmod(filepath.Join(MOUNT_POINT, "tmp"), 0o1777)
 	os.Chmod(filepath.Join(MOUNT_POINT, "root"), 0o700)
 
-	// Copy dreamland and its libs into the new root
 	dreamlandSrc := "/sbin/dreamland"
 	if !fileExists(dreamlandSrc) {
 		dreamlandSrc = "/usr/bin/dreamland"
@@ -378,7 +378,6 @@ func InstallBaseSystem() error {
 	os.Chmod(dreamlandDst, 0755)
 	exec.Command("ln", "-sf", "dreamland", filepath.Join(MOUNT_POINT, "usr/bin/dl")).Run()
 
-	// Copy libs needed by dreamland
 	if err := exec.Command("cp", "-a", "/lib/.", filepath.Join(MOUNT_POINT, "lib")+"/").Run(); err != nil {
 		logf("WARNING: lib copy failed: %v\n", err)
 	}
@@ -394,7 +393,6 @@ func InstallBaseSystem() error {
 		exec.Command("cp", "-a", "/usr/lib64/.", filepath.Join(MOUNT_POINT, "usr/lib64")+"/").Run()
 	}
 
-	// Copy curl
 	for _, curlPath := range []string{"/usr/bin/curl", "/bin/curl", "/sbin/curl"} {
 		if fileExists(curlPath) {
 			exec.Command("cp", curlPath, filepath.Join(MOUNT_POINT, "usr/bin/curl")).Run()
@@ -402,7 +400,6 @@ func InstallBaseSystem() error {
 		}
 	}
 
-	// Copy CA certs
 	for _, cert := range []string{
 		"/etc/ssl/certs/ca-certificates.crt",
 		"/etc/pki/tls/certs/ca-bundle.crt",
@@ -415,7 +412,6 @@ func InstallBaseSystem() error {
 		}
 	}
 
-	// Copy busybox and create symlinks
 	if fileExists("/bin/busybox") {
 		exec.Command("cp", "/bin/busybox", filepath.Join(MOUNT_POINT, "bin/busybox")).Run()
 		for _, cmd := range []string{"sh", "ash", "ls", "cat", "echo", "cp", "mv", "rm",
@@ -426,15 +422,12 @@ func InstallBaseSystem() error {
 		}
 	}
 
-	// Copy resolv.conf so dreamland can reach the internet
 	exec.Command("cp", "/etc/resolv.conf", filepath.Join(MOUNT_POINT, "etc/resolv.conf")).Run()
 
-	// Bind mount proc/sys/dev for chroot
 	exec.Command("mount", "--bind", "/proc", filepath.Join(MOUNT_POINT, "proc")).Run()
 	exec.Command("mount", "--bind", "/sys", filepath.Join(MOUNT_POINT, "sys")).Run()
 	exec.Command("mount", "--bind", "/dev", filepath.Join(MOUNT_POINT, "dev")).Run()
 
-	// Find chroot binary
 	chroot := "/sbin/chroot"
 	if !fileExists(chroot) {
 		chroot = "/usr/sbin/chroot"
@@ -454,6 +447,20 @@ func InstallBaseSystem() error {
 		"TERM=linux",
 	}
 
+	// Pre-populate dreamland's installed.db with packages satisfied by the
+	// host lib copy. This prevents dreamland from trying to install glibc
+	// (and other base libs) from Arch, which always fails because the Arch
+	// tarball conflicts with the already-present host-copied libs.
+	installedDir := filepath.Join(MOUNT_POINT, "root", ".local", "share", "dreamland")
+	if err := os.MkdirAll(installedDir, 0755); err == nil {
+		os.WriteFile(
+			filepath.Join(installedDir, "installed.db"),
+			[]byte(hostProvidedPackages()),
+			0644,
+		)
+		logf("Pre-seeded installed.db with host-provided packages\n")
+	}
+
 	logf("Running dreamland sync...\n")
 	syncCmd := exec.Command(chroot, MOUNT_POINT, "/usr/bin/dreamland", "sync")
 	syncCmd.Env = chrootEnv
@@ -463,10 +470,6 @@ func InstallBaseSystem() error {
 		return fmt.Errorf("dreamland sync failed: %w", err)
 	}
 
-	// Install only Galactica-native packages individually.
-	// Do NOT install the 'base' metapackage — it pulls Arch transitive deps
-	// (glibc, linux, systemd, etc.) which conflict with the host libs already
-	// copied into the chroot and causes download failures like the glibc error.
 	galacticaPkgs := []string{"busybox", "airride", "poyo", "ginitrd", "base-config"}
 	for _, pkg := range galacticaPkgs {
 		logf("Running dreamland install %s...\n", pkg)
@@ -475,8 +478,6 @@ func InstallBaseSystem() error {
 		pkgOut, pkgErr := cmd.CombinedOutput()
 		logf("dreamland install %s: %s\n", pkg, string(pkgOut))
 		if pkgErr != nil {
-			// Non-fatal: log and continue. The binaries may already be present
-			// from the host copy above (busybox, curl, etc.).
 			logf("WARNING: dreamland install %s failed (continuing): %v\n", pkg, pkgErr)
 		}
 	}
@@ -496,9 +497,6 @@ func InstallKernel() error {
 		"TERM=linux",
 	}
 
-	// Use the Galactica linux.pkg from GalacticaRepository, NOT Arch's 'linux'.
-	// The pkg file installs a pre-built kernel tarball released from the
-	// build-kernel.yml workflow, so no compilation happens here.
 	logf("Running dreamland install linux...\n")
 	cmd := exec.Command(chroot, MOUNT_POINT, "/usr/bin/dreamland", "install", "linux")
 	cmd.Env = chrootEnv
@@ -536,7 +534,6 @@ func ConfigureSystem(hostname string) error {
 		return fmt.Errorf("failed to write resolv.conf: %w", err)
 	}
 
-	// Pre-create udhcpc script so network-setup works on first boot
 	udhcpcDir := filepath.Join(MOUNT_POINT, "usr", "share", "udhcpc")
 	if err := os.MkdirAll(udhcpcDir, 0755); err != nil {
 		return fmt.Errorf("failed to create udhcpc dir: %w", err)
@@ -632,15 +629,12 @@ func installGRUB_UEFI(device string) error {
 		device,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		// UEFI install failed — fall back to BIOS
 		logf("UEFI grub-install failed, falling back to BIOS: %s\n", string(output))
 		return installGRUB_BIOS(device)
 	}
 	return nil
 }
 
-// buildInitramfsAndWriteGRUB runs ginitrd inside the target via chroot,
-// then writes grub.cfg reflecting what was actually built.
 func buildInitramfsAndWriteGRUB(rootPart, bootPart string) error {
 	ginitrdPath, err := exec.LookPath("ginitrd")
 	if err != nil {
@@ -685,8 +679,8 @@ func buildInitramfsAndWriteGRUB(rootPart, bootPart string) error {
 	hasNormal := fileExists(normalImg)
 	hasFallback := fileExists(fallbackImg)
 	return writeGRUBConfig(hasNormal, hasFallback, rootPart, bootPart)
-} // writeGRUBConfig writes /boot/grub/grub.cfg inside the target.
-// hasInitramfs and hasFallback control whether initrd lines are included.
+}
+
 func writeGRUBConfig(hasInitramfs bool, hasFallback bool, rootPart string, bootPart string) error {
 	grubDir := filepath.Join(MOUNT_POINT, "boot", "grub")
 	if err := os.MkdirAll(grubDir, 0755); err != nil {
@@ -695,7 +689,6 @@ func writeGRUBConfig(hasInitramfs bool, hasFallback bool, rootPart string, bootP
 
 	var rootArg string
 	if hasInitramfs {
-		// initramfs can resolve UUID via blkid/findfs
 		rootUUID, err := getUUID(rootPart)
 		if err == nil && rootUUID != "" {
 			rootArg = "UUID=" + rootUUID
@@ -703,7 +696,6 @@ func writeGRUBConfig(hasInitramfs bool, hasFallback bool, rootPart string, bootP
 			rootArg = rootPart
 		}
 	} else {
-		// no initramfs — kernel needs a direct device path
 		rootArg = rootPart
 	}
 
@@ -816,12 +808,11 @@ func generatePasswordHash(password string) (string, error) {
 // ============================================================
 
 func GenerateFstab(device string) error {
-    // Wait for partitions to settle after all the formatting/mounting
-    time.Sleep(2 * time.Second)
-    exec.Command("partx", "-u", device).Run()
-    time.Sleep(1 * time.Second)
-    
-    bootPart := getPartitionPath(device, 1)
+	time.Sleep(2 * time.Second)
+	exec.Command("partx", "-u", device).Run()
+	time.Sleep(1 * time.Second)
+
+	bootPart := getPartitionPath(device, 1)
 	swapPart := getPartitionPath(device, 2)
 	rootPart := getPartitionPath(device, 3)
 

@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 typedef struct {
-    int api_version;
+    int         api_version;
     const char* name;
     const char* version;
     const char* description;
@@ -23,9 +23,9 @@ typedef struct {
 } DreamlandCommand;
 
 typedef DreamlandModuleInfo* (*dreamland_module_info_fn)();
-typedef int (*dreamland_module_init_fn)();
-typedef void (*dreamland_module_cleanup_fn)();
-typedef DreamlandCommand* (*dreamland_module_commands_fn)(int* count);
+typedef int                  (*dreamland_module_init_fn)();
+typedef void                 (*dreamland_module_cleanup_fn)();
+typedef DreamlandCommand*    (*dreamland_module_commands_fn)(int* count);
 
 #ifdef __cplusplus
 }
